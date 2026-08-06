@@ -468,6 +468,132 @@ program
     setInterval(() => {}, 1 << 30);
   });
 
+program
+  .command("transaction")
+  .description("Execute a JSONL edit file atomically as one canonical document commit")
+  .argument("<file>", "JSONL file of mutation operations")
+  .requiredOption("--idempotency-key <key>", "Stable retry key")
+  .option("--message <text>", "Commit message", "Atomic edit")
+  .action(async (file, cmdOpts) => {
+    const opts = getOpts();
+    const input = await readFile(file, "utf8");
+    const operations: { method: string; params?: unknown }[] = [];
+    for (const [index, raw] of input.split("\n").entries()) {
+      const line = raw.trim();
+      if (!line || line.startsWith("#")) continue;
+      try {
+        operations.push(JSON.parse(line) as { method: string; params?: unknown });
+      } catch (error) {
+        throw new Error(`Invalid JSON on line ${index + 1}: ${(error as Error).message}`);
+      }
+    }
+    const result = await rpc(opts, "transaction.execute", {
+      idempotencyKey: cmdOpts.idempotencyKey,
+      message: cmdOpts.message,
+      operations,
+    });
+    output(opts, result);
+  });
+
+const doc = program.command("doc").description("Canonical document and version operations");
+
+doc
+  .command("get")
+  .option("--commit <id>", "Read a specific commit")
+  .action(async (cmdOpts) => {
+    const opts = getOpts();
+    output(opts, await rpc(opts, "doc.get", cmdOpts.commit ? { commitId: cmdOpts.commit } : {}));
+  });
+
+doc
+  .command("history")
+  .option("--limit <n>", "Maximum commits", "100")
+  .action(async (cmdOpts) => {
+    const opts = getOpts();
+    output(opts, await rpc(opts, "doc.history", { limit: parseInt(cmdOpts.limit, 10) }));
+  });
+
+doc
+  .command("undo")
+  .option("--steps <n>", "Document commits", "1")
+  .action(async (cmdOpts) => {
+    const opts = getOpts();
+    output(opts, await rpc(opts, "doc.undo", { steps: parseInt(cmdOpts.steps, 10) }));
+  });
+
+doc
+  .command("redo")
+  .option("--steps <n>", "Document commits", "1")
+  .action(async (cmdOpts) => {
+    const opts = getOpts();
+    output(opts, await rpc(opts, "doc.redo", { steps: parseInt(cmdOpts.steps, 10) }));
+  });
+
+doc
+  .command("branch")
+  .argument("<action>", "list | create | switch")
+  .option("--name <name>", "Branch name")
+  .action(async (action, cmdOpts) => {
+    const opts = getOpts();
+    if (action === "list") return output(opts, await rpc(opts, "doc.branch.list"));
+    if (!cmdOpts.name) throw new Error(`doc branch ${action} requires --name`);
+    if (action === "create") {
+      return output(opts, await rpc(opts, "doc.branch.create", { name: cmdOpts.name }));
+    }
+    if (action === "switch") {
+      return output(opts, await rpc(opts, "doc.branch.switch", { name: cmdOpts.name }));
+    }
+    throw new Error(`Unknown doc branch action: ${action}`);
+  });
+
+doc
+  .command("checkpoint")
+  .argument("<action>", "list | create | restore")
+  .option("--name <name>", "Checkpoint name")
+  .option("--message <text>", "Checkpoint note")
+  .action(async (action, cmdOpts) => {
+    const opts = getOpts();
+    if (action === "list") return output(opts, await rpc(opts, "doc.checkpoint.list"));
+    if (!cmdOpts.name) throw new Error(`doc checkpoint ${action} requires --name`);
+    if (action === "create") {
+      return output(
+        opts,
+        await rpc(opts, "doc.checkpoint.create", {
+          name: cmdOpts.name,
+          ...(cmdOpts.message ? { message: cmdOpts.message } : {}),
+        }),
+      );
+    }
+    if (action === "restore") {
+      return output(opts, await rpc(opts, "doc.checkpoint.restore", { name: cmdOpts.name }));
+    }
+    throw new Error(`Unknown doc checkpoint action: ${action}`);
+  });
+
+doc
+  .command("render")
+  .description("Render the canonical document headlessly as deterministic SVG")
+  .option("--commit <id>", "Render a specific commit")
+  .option("--out <path>", "Download SVG to a file")
+  .action(async (cmdOpts) => {
+    const opts = getOpts();
+    const result = await rpc<{ url: string; size: number; digest: string; warnings: string[] }>(
+      opts,
+      "doc.render",
+      { format: "svg", ...(cmdOpts.commit ? { commitId: cmdOpts.commit } : {}) },
+    );
+    if (!cmdOpts.out) return output(opts, result);
+    const baseUrl = (opts.url ?? "").replace(/^ws/, "http");
+    const data = await fetch(baseUrl + result.url).then((response) => response.arrayBuffer());
+    await writeFile(cmdOpts.out, Buffer.from(data));
+    output(opts, {
+      saved: cmdOpts.out,
+      size: data.byteLength,
+      digest: result.digest,
+      warnings: result.warnings,
+    });
+  });
+
 // ---------------------------------------------------------------------------
 // script — run many RPCs over ONE WebSocket connection.
 //

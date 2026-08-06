@@ -36,12 +36,34 @@ Open `http://127.0.0.1:8080` in your browser — you're now the primary client. 
                               ▼
                      data/<name>.png
                      data/state.json
+                     data/document.json
 ```
 
-- **Browser is authoritative for pixels** — server has no native canvas dependency.
-- **Server is authoritative for metadata** — canvas size, layers, history summary, event log.
+- **Browser is the high-fidelity raster renderer** — server has no native canvas dependency.
+- **Server is authoritative for the artwork document** — structure, operations, versions, branches, baselines, and audit log.
 - **`primary` browser** is elected by connect order; agent RPCs needing pixels are proxied to it.
 - **Single process** — built-in HTTP + `ws` package + Vite middleware in dev.
+
+## P0 canonical document foundation
+
+The server now maintains an immutable, versioned artwork document in addition
+to the compatibility operation log:
+
+- every native mutation becomes a canonical commit;
+- `transaction.execute` is serialized, idempotent, and restores all layer
+  pixels plus metadata when any operation fails;
+- exact `doc.undo` / `doc.redo`, named checkpoints, and branch switching are
+  persistent across browser sessions;
+- document persistence uses atomic replacement with a recoverable backup;
+- the first primary browser captures the existing per-layer raster baseline,
+  so the first brush stroke is independently undoable and an upgraded
+  workspace is not flattened or discarded;
+- external imports and loaded snapshots create exact raster keyframes instead
+  of leaving non-replayable URLs in history;
+- `doc.render` produces deterministic SVG without a primary browser.
+
+The browser remains the high-fidelity PNG/JPEG renderer in P0, but it is now a
+recoverable rendering terminal rather than the only holder of artwork history.
 
 ## CLI
 
@@ -61,6 +83,11 @@ npm run cli -- load --name mywork
 npm run cli -- history undo --steps 3
 npm run cli -- filter blur --radius 3
 npm run cli -- subscribe            # follow all events
+npm run cli -- transaction pass.jsonl --idempotency-key pass-01
+npm run cli -- doc history
+npm run cli -- doc checkpoint create --name approved-v1
+npm run cli -- doc branch create --name experiments/neon
+npm run cli -- doc render --out artwork.svg
 ```
 
 Global options:

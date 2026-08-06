@@ -34,8 +34,9 @@ Response:
   "result": {
     "clientId": "<server-confirmed>",
     "isPrimary": true,
-    "serverEventSeq": 123,
-    "state": { /* CanvasGetInfoResult */ }
+      "serverEventSeq": 123,
+      "state": { /* CanvasGetInfoResult */ },
+      "document": { /* optional DocumentReplaySnapshot for browser recovery */ }
   }
 }
 ```
@@ -72,6 +73,9 @@ Server disconnects after 60s of silence.
 | `-32005` | `OUT_OF_BOUNDS` — coordinate outside canvas |
 | `-32006` | `SNAPSHOT_TOO_LARGE` — payload over 5MB; use URL |
 | `-32007` | `NOT_AUTHORIZED` — bad token |
+| `-32008` | `DOCUMENT_CONFLICT` — stale version, duplicate ref, or idempotency-key conflict |
+| `-32009` | `TRANSACTION_ABORTED` — an atomic edit failed and was rolled back |
+| `-32010` | `VERSION_NOT_FOUND` — commit, branch, or checkpoint does not exist |
 
 ---
 
@@ -105,7 +109,7 @@ Server disconnects after 60s of silence.
 | `layer.rename` | `{ layerId, name }` | `{ ok }` | Rename |
 | `layer.reorder` | `{ layerIds }` | `{ ok }` | Reorder all layers (bottom-to-top) |
 | `layer.merge` | `{ fromId, intoId }` | `{ ok }` | Merge `fromId` into `intoId`; deletes `fromId` |
-| `layer.flatten` | — | `{ id, name }` | Merge all visible layers into one |
+| `layer.flatten` | `{ layerId? }` | `{ id, name }` | Merge all visible layers into one; server supplies a deterministic id |
 
 `BlendMode` enum: `source-over`, `multiply`, `screen`, `overlay`, `darken`, `lighten`, `color-dodge`, `color-burn`, `hard-light`, `soft-light`, `difference`, `exclusion`, `hue`, `saturation`, `color`, `luminosity`.
 
@@ -131,13 +135,15 @@ Point format: `{ x: number, y: number, pressure?: 0..1 }`. `pressure` defaults t
 
 | Method | Params | Description |
 |---|---|---|
-| `history.undo` | `{ steps?: 1 }` | Undo N steps on the active layer |
-| `history.redo` | `{ steps?: 1 }` | Redo N steps |
+| `history.undo` | `{ steps?: 1 }` | Compatibility alias for canonical `doc.undo` |
+| `history.redo` | `{ steps?: 1 }` | Compatibility alias for canonical `doc.redo` |
 | `history.goto` | `{ index }` | Jump to absolute history index (v2; approximate in v1) |
-| `history.getLength` | — | `{ undo, redo, total }` aggregated across all layers |
-| `history.clear` | — | Drop all undo/redo stacks |
+| `history.getLength` | — | Canonical `{ undo, redo, total }` for the checked-out branch |
+| `history.clear` | — | Drop the primary renderer's transient ImageData cache |
 
-> History is **per-layer** and stored on the primary browser (full ImageData snapshots, depth 30). v1 does not sync undo across browsers — each browser maintains its own. Calling `history.undo` as an agent only affects the primary.
+`history.undo` and `history.redo` now use the same exact, persistent,
+cross-browser commit history as `doc.undo` and `doc.redo`. The renderer keeps a
+small transient per-layer ImageData cache only for implementation compatibility.
 
 ### `filter.*`
 
@@ -159,6 +165,46 @@ All accept `layerId?` (default: all layers).
 | `snapshot.load` | `{ name }` | `{ width, height, layers }` | Load `data/<name>.png` into the active layer |
 
 `name` regex: `^[a-zA-Z0-9_-]+$`, max 64 chars (path-traversal-proof).
+
+### `transaction.*`
+
+`transaction.execute` validates every operation before execution, serializes it
+against all other mutations, and commits the entire edit once. On failure it
+restores both structural metadata and every layer's PNG pixels.
+
+```json
+{
+  "idempotencyKey": "portrait-pass-03",
+  "message": "Add eyes and highlights",
+  "operations": [
+    { "method": "layer.create", "params": { "layerId": "L_eyes", "name": "eyes" } },
+    { "method": "draw.circle", "params": { "layerId": "L_eyes", "cx": 400, "cy": 260, "r": 24, "fill": "#ffffff" } }
+  ]
+}
+```
+
+Retries with the same key and operations return the original result with
+`replayed: true`; reusing a key with different operations returns `-32008`.
+
+### `doc.*`
+
+| Method | Params | Purpose |
+|---|---|---|
+| `doc.get` | `{ commitId? }` | Canonical metadata, baseline rasters and deterministic operation ancestry |
+| `doc.history` | `{ limit? }` | Commit history and undo/redo availability |
+| `doc.undo` / `doc.redo` | `{ steps }` | Restore exact document commits by rebuilding the primary renderer |
+| `doc.branch.create` | `{ name }` | Create a branch pointer at the current commit |
+| `doc.branch.list` | — | List branch heads |
+| `doc.branch.switch` | `{ name }` | Restore and switch to another branch |
+| `doc.checkpoint.create` | `{ name, message? }` | Name the current immutable commit |
+| `doc.checkpoint.list` | — | List named checkpoints |
+| `doc.checkpoint.restore` | `{ name }` | Restore a named checkpoint |
+| `doc.render` | `{ format: "svg", commitId? }` | Deterministic headless SVG render; no primary browser required |
+
+The first primary browser captures a per-layer PNG baseline before interaction.
+Native paint-web operations are replayable after crashes or browser reconnects.
+`canvas.import` and `snapshot.load` additionally capture exact per-layer raster
+keyframes, so branches remain restorable even when the original URL disappears.
 
 ### `event.*`
 
@@ -198,7 +244,9 @@ Events are server-pushed notifications (no `id`). Carry a monotonic `seq` for re
 | `stroke.committed` | Any `draw.*` RPC applied successfully |
 | `draw.batched` | `draw.batch` completed |
 | `layer.created` / `layer.deleted` / `layer.changed` / `layer.reordered` / `layer.merged` / `layer.flattened` | Layer operations |
-| `canvas.resized` / `canvas.cleared` / `canvas.filled` | Canvas mutations |
+| `canvas.resized` / `canvas.cleared` / `canvas.filled` / `canvas.imported` | Canvas mutations |
+| `transaction.committed` | One atomic transaction became a canonical commit |
+| `document.restored` | Undo, redo, branch switch, or checkpoint restore completed |
 | `history.undone` / `history.redone` / `history.cleared` | History operations |
 | `filter.applied` | Any `filter.*` |
 | `snapshot.saved` / `snapshot.loaded` | Persistence operations |
@@ -300,6 +348,11 @@ await rpc("draw.batch", { operations: ops });
 # Equivalent to Example 1
 paint-cli stroke --brush --color "#ff0000" --size 12 --points "100,100;400,300"
 paint-cli export --out out.png
+paint-cli transaction pass.jsonl --idempotency-key portrait-pass-03 --message "eyes"
+paint-cli doc history
+paint-cli doc checkpoint create --name approved-v1
+paint-cli doc branch create --name experiments/neon
+paint-cli doc render --out document.svg
 ```
 
 ---
@@ -311,6 +364,9 @@ These methods are not part of the public API but appear on the wire:
 - `internal.exec` — server → primary, carries `{ origMethod, origParams, requestId }`. Primary returns result via `internal.execResult`.
 - `internal.snapshot` — server → primary, requests `{ png, width, height }` of the composited canvas.
 - `internal.primaryPromotion` — server → browser, "you're now primary".
+- `document.prepareBaseline` — reconcile server layer ids before the initial raster capture.
+- `document.restoreRaster` — restore a transaction's captured per-layer pixels after failure.
+- `document.replay` — rebuild a canonical commit from baseline rasters and operations.
 - `internal.execResult` / `internal.snapshotResult` — primary → server, response carriers.
 
 Agents should never send these.
