@@ -146,7 +146,7 @@ export class LayerStack {
     this.deleteLayer(fromId);
   }
 
-  flatten(): { id: LayerId; name: string } {
+  flatten(layerId?: LayerId): { id: LayerId; name: string } {
     // Composite all visible layers top-to-bottom onto a fresh canvas,
     // then replace all layers with the merged result.
     const { canvas, ctx } = makeCanvas(this.width, this.height);
@@ -166,7 +166,7 @@ export class LayerStack {
     for (const id of [...this.layers.keys()]) this.layers.delete(id);
     this.order = [];
     // Create one new layer
-    const newId = "L_" + Math.random().toString(36).slice(2, 10);
+    const newId = layerId ?? "L_" + Math.random().toString(36).slice(2, 10);
     const newLayer: InternalLayer = {
       id: newId,
       name: "Flattened",

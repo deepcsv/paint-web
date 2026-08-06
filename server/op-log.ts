@@ -1,5 +1,5 @@
 import { appendFile, mkdir, readFile, unlink, writeFile } from "node:fs/promises";
-import { resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 
 const DATA_DIR = resolve(process.cwd(), "data");
 const OPS_FILE = resolve(DATA_DIR, "ops.jsonl");
@@ -19,6 +19,12 @@ export interface OpEntry {
   result: unknown;
 }
 
+export interface OpLogOptions {
+  /** Disable disk I/O for isolated tests or ephemeral harnesses. */
+  persist?: boolean;
+  filePath?: string;
+}
+
 /**
  * OpLog — append-only log of every mutating RPC. Used for:
  *  - inspection (agent queries "what happened so far")
@@ -32,17 +38,23 @@ export class OpLog {
   private ops: OpEntry[] = [];
   private writeScheduled = false;
   private pendingAppend: string[] = [];
+  private readonly persist: boolean;
+  private readonly opsFile: string;
 
-  constructor() {
+  constructor(options: OpLogOptions = {}) {
+    this.persist = options.persist ?? true;
+    this.opsFile = options.filePath ?? OPS_FILE;
     // Best-effort load of any persisted log on startup
-    this.loadFromDisk().catch((err) => {
-      console.warn("[op-log] failed to load ops.jsonl:", err);
-    });
+    if (this.persist) {
+      this.loadFromDisk().catch((err) => {
+        console.warn("[op-log] failed to load ops.jsonl:", err);
+      });
+    }
   }
 
   private async loadFromDisk(): Promise<void> {
     try {
-      const text = await readFile(OPS_FILE, "utf8");
+      const text = await readFile(this.opsFile, "utf8");
       const lines = text.split("\n").filter((l) => l.trim());
       for (const line of lines) {
         try {
@@ -68,8 +80,10 @@ export class OpLog {
       ...op,
     };
     this.ops.push(entry);
-    this.pendingAppend.push(JSON.stringify(entry));
-    this.scheduleFlush();
+    if (this.persist) {
+      this.pendingAppend.push(JSON.stringify(entry));
+      this.scheduleFlush();
+    }
     return entry;
   }
 
@@ -101,10 +115,12 @@ export class OpLog {
   async clear(): Promise<void> {
     this.ops = [];
     this.pendingAppend = [];
-    try {
-      await unlink(OPS_FILE);
-    } catch {
-      // file may not exist
+    if (this.persist) {
+      try {
+        await unlink(this.opsFile);
+      } catch {
+        // file may not exist
+      }
     }
   }
 
@@ -117,9 +133,9 @@ export class OpLog {
       this.pendingAppend = [];
       if (batch.length === 0) return;
       try {
-        await mkdir(DATA_DIR, { recursive: true });
+        await mkdir(dirname(this.opsFile), { recursive: true });
         const text = batch.map((l) => l + "\n").join("");
-        await appendFile(OPS_FILE, text, "utf8");
+        await appendFile(this.opsFile, text, "utf8");
       } catch (err) {
         console.error("[op-log] flush failed:", err);
         // Put unflushed entries back at the front
@@ -136,7 +152,9 @@ export class OpLog {
   /** Replace the entire log file (used by tests). */
   async reset(): Promise<void> {
     await this.clear();
-    await mkdir(DATA_DIR, { recursive: true });
-    await writeFile(OPS_FILE, "", "utf8");
+    if (this.persist) {
+      await mkdir(dirname(this.opsFile), { recursive: true });
+      await writeFile(this.opsFile, "", "utf8");
+    }
   }
 }

@@ -6,6 +6,8 @@ import {
   CanvasExportParams,
   SnapshotSaveParams,
   Color,
+  DocumentReplaySnapshot,
+  TransactionExecuteParams,
 } from "../shared/protocol.js";
 
 describe("protocol schemas", () => {
@@ -78,5 +80,45 @@ describe("protocol schemas", () => {
   it("SnapshotSaveParams rejects path-traversal names", () => {
     expect(SnapshotSaveParams.safeParse({ name: "../evil" }).success).toBe(false);
     expect(SnapshotSaveParams.safeParse({ name: "ok_name-1" }).success).toBe(true);
+  });
+
+  it("TransactionExecuteParams supplies a commit message and requires a retry key", () => {
+    const parsed = TransactionExecuteParams.safeParse({
+      idempotencyKey: "pass-01",
+      operations: [{ method: "canvas.clear", params: {} }],
+    });
+    expect(parsed.success).toBe(true);
+    if (parsed.success) expect(parsed.data.message).toBe("Atomic edit");
+    expect(
+      TransactionExecuteParams.safeParse({ operations: [{ method: "canvas.clear", params: {} }] })
+        .success,
+    ).toBe(false);
+  });
+
+  it("DocumentReplaySnapshot validates canonical recovery payloads", () => {
+    const layer = {
+      id: "L_base",
+      name: "Base",
+      visible: true,
+      opacity: 1,
+      blendMode: "source-over" as const,
+    };
+    expect(
+      DocumentReplaySnapshot.safeParse({
+        schemaVersion: 1,
+        documentId: "D_test",
+        title: "Test",
+        revision: 0,
+        commitId: "C_0",
+        branch: "main",
+        createdAt: 1,
+        updatedAt: 1,
+        baseState: { width: 1280, height: 720, layers: [layer], activeLayerId: layer.id },
+        state: { width: 1280, height: 720, layers: [layer], activeLayerId: layer.id },
+        baseRaster: [{ id: layer.id, png: "" }],
+        operations: [],
+        replayable: true,
+      }).success,
+    ).toBe(true);
   });
 });

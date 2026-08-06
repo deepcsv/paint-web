@@ -6,7 +6,11 @@ import { ColorPicker } from "./ui/ColorPicker.js";
 import { SizeSlider } from "./ui/SizeSlider.js";
 import { LayerPanel } from "./ui/LayerPanel.js";
 import { StatusBar } from "./ui/StatusBar.js";
-import type { DrawStrokeParams } from "../shared/protocol.js";
+import type {
+  DocumentReplaySnapshot,
+  DocumentStateSnapshot,
+  DrawStrokeParams,
+} from "../shared/protocol.js";
 
 const CLIENT_ID_KEY = "paint-web.clientId";
 const SEQ_KEY = "paint-web.lastEventSeq";
@@ -51,34 +55,26 @@ refreshLayerPanel();
 
 layerPanel.setHandlers({
   onSelect: (id) => {
-    controller.setActive({ layerId: id });
-    refreshLayerPanel();
     void wsClient.request("layer.setActive", { layerId: id }).catch(console.warn);
   },
   onToggleVisible: (id, visible) => {
-    controller.setVisible({ layerId: id, visible });
     void wsClient.request("layer.setVisible", { layerId: id, visible }).catch(console.warn);
   },
   onSetOpacity: (id, opacity) => {
-    controller.setOpacity({ layerId: id, opacity });
     void wsClient.request("layer.setOpacity", { layerId: id, opacity }).catch(console.warn);
   },
   onRename: (id, name) => {
-    controller.rename({ layerId: id, name });
-    refreshLayerPanel();
     void wsClient.request("layer.rename", { layerId: id, name }).catch(console.warn);
   },
   onAdd: async () => {
     const layerId = "L_" + Math.random().toString(36).slice(2, 10);
     const name = `Layer ${controller.getInfo().layers.length + 1}`;
-    controller.createLayer({ layerId, name });
-    refreshLayerPanel();
     void wsClient.request("layer.create", { layerId, name }).catch(console.warn);
   },
-  onDelete: (id) => {
-    controller.deleteLayer({ layerId: id });
-    refreshLayerPanel();
-    void wsClient.request("layer.delete", { layerId: id }).catch(console.warn);
+  onDelete: async (id) => {
+    // Deletion is server-authoritative so the final-layer invariant cannot
+    // leave the local browser in a state the server rejected.
+    await wsClient.request("layer.delete", { layerId: id }).catch(console.warn);
   },
 });
 
@@ -114,6 +110,10 @@ overlay.style.zIndex = "2";
 const wrapper = document.getElementById("canvas-wrapper")!;
 // Position overlay exactly on top of the canvas
 const canvasRectSync = () => {
+  if (overlay.width !== canvas.width || overlay.height !== canvas.height) {
+    overlay.width = canvas.width;
+    overlay.height = canvas.height;
+  }
   const r = canvas.getBoundingClientRect();
   const wr = wrapper.getBoundingClientRect();
   overlay.style.left = `${r.left - wr.left}px`;
@@ -165,6 +165,33 @@ function drawShapePreview(tool: "line" | "rect" | "circle" | "ellipse", a: { x: 
     overlayCtx.beginPath();
     overlayCtx.arc((a.x + b.x) / 2, (a.y + b.y) / 2, r, 0, Math.PI * 2);
     overlayCtx.fill();
+    overlayCtx.stroke();
+  }
+  overlayCtx.restore();
+}
+
+function drawStrokePreview(stroke: PendingStroke): void {
+  clearOverlay();
+  if (stroke.points.length === 0) return;
+  overlayCtx.save();
+  overlayCtx.globalAlpha = stroke.tool === "eraser" ? 0.7 : stroke.opacity;
+  overlayCtx.strokeStyle = stroke.tool === "eraser" ? "#ffffff" : stroke.color;
+  overlayCtx.fillStyle = overlayCtx.strokeStyle;
+  overlayCtx.lineCap = "round";
+  overlayCtx.lineJoin = "round";
+  overlayCtx.lineWidth = stroke.size;
+  if (stroke.tool === "eraser") overlayCtx.setLineDash([Math.max(2, stroke.size), Math.max(2, stroke.size / 2)]);
+  overlayCtx.beginPath();
+  const first = stroke.points[0]!;
+  overlayCtx.moveTo(first.x, first.y);
+  for (let index = 1; index < stroke.points.length; index++) {
+    const point = stroke.points[index]!;
+    overlayCtx.lineTo(point.x, point.y);
+  }
+  if (stroke.points.length === 1) {
+    overlayCtx.arc(first.x, first.y, stroke.size / 2, 0, Math.PI * 2);
+    overlayCtx.fill();
+  } else {
     overlayCtx.stroke();
   }
   overlayCtx.restore();
@@ -265,32 +292,7 @@ const pointer = new PointerHandler({
     }
     if (pendingStroke) {
       pendingStroke.points.push(p);
-      const layer = controller.layers.getLayer(pendingStroke.layerId!);
-      if (!layer) return;
-      const ctx = layer.ctx;
-      const n = pendingStroke.points.length;
-      if (n >= 2) {
-        const a = pendingStroke.points[n - 2]!;
-        const b = pendingStroke.points[n - 1]!;
-        ctx.save();
-        ctx.globalAlpha = pendingStroke.opacity;
-        ctx.lineCap = "round";
-        ctx.lineJoin = "round";
-        ctx.lineWidth = pendingStroke.size * (0.3 + 0.7 * (b.pressure ?? 0.5));
-        if (pendingStroke.tool === "eraser") {
-          ctx.globalCompositeOperation = "destination-out";
-          ctx.strokeStyle = "rgba(0,0,0,1)";
-        } else {
-          ctx.globalCompositeOperation = "source-over";
-          ctx.strokeStyle = pendingStroke.color;
-        }
-        ctx.beginPath();
-        ctx.moveTo(a.x, a.y);
-        ctx.lineTo(b.x, b.y);
-        ctx.stroke();
-        ctx.restore();
-        controller.triggerRender();
-      }
+      drawStrokePreview(pendingStroke);
     }
   },
   onStrokeEnd: () => {
@@ -363,6 +365,7 @@ const pointer = new PointerHandler({
     shapeEnd = null;
 
     if (pendingStroke) {
+      clearOverlay();
       const pts = pendingStroke.points;
       const params: DrawStrokeParams = {
         layerId: pendingStroke.layerId!,
@@ -397,10 +400,10 @@ actions.addEventListener("click", (e) => {
   if (!btn.dataset.action) return;
   switch (btn.dataset.action) {
     case "undo":
-      void wsClient.request("history.undo", { steps: 1 }).catch(console.warn);
+      void wsClient.request("doc.undo", { steps: 1 }).catch(console.warn);
       break;
     case "redo":
-      void wsClient.request("history.redo", { steps: 1 }).catch(console.warn);
+      void wsClient.request("doc.redo", { steps: 1 }).catch(console.warn);
       break;
     case "clear":
       if (confirm("Clear canvas?")) {
@@ -478,9 +481,10 @@ internalHandlers.set("layer.merge", (p) => {
   controller.merge(p as never);
   refreshLayerPanel();
 });
-internalHandlers.set("layer.flatten", () => {
-  controller.flatten();
+internalHandlers.set("layer.flatten", (p) => {
+  const result = controller.flatten(p as { layerId?: string } | undefined);
   refreshLayerPanel();
+  return result;
 });
 internalHandlers.set("draw.stroke", wrapHandler("draw.stroke", (p: never) => controller.stroke(p)));
 internalHandlers.set("draw.line", wrapHandler("draw.line", (p: never) => controller.line(p)));
@@ -552,6 +556,77 @@ internalHandlers.set("canvas.getState", async () => {
   return { layers: out };
 });
 
+internalHandlers.set("document.prepareBaseline", (params) => {
+  const { state } = params as { state: DocumentStateSnapshot };
+  const info = controller.getInfo();
+  if (info.width !== state.width || info.height !== state.height) {
+    controller.resize({ width: state.width, height: state.height, mode: "anchor" });
+  }
+  // Preserve pixels for matching ids (important during a server restart),
+  // while replacing a fresh page's unrelated local layer ids.
+  controller.reconcileFromServer(state.layers, state.activeLayerId);
+  controller.triggerRender();
+  refreshLayerPanel();
+  return { ok: true };
+});
+
+internalHandlers.set("document.restoreRaster", async (params) => {
+  const payload = params as {
+    state: DocumentStateSnapshot;
+    layers: { id: string; png: string }[];
+  };
+  await restoreRasterState(payload.state, payload.layers);
+  return { ok: true };
+});
+
+internalHandlers.set("document.replay", async (params) => {
+  const snapshot = params as DocumentReplaySnapshot;
+  if (!snapshot.replayable) throw new Error("Document has no captured pixel baseline");
+  await restoreRasterState(snapshot.baseState, snapshot.baseRaster);
+  const warnings: string[] = [];
+  for (const operation of snapshot.operations) {
+    const handler = internalHandlers.get(operation.method);
+    if (!handler || operation.method.startsWith("document.")) {
+      warnings.push(`Skipped unsupported replay operation: ${operation.method}`);
+      continue;
+    }
+    await handler(operation.params);
+  }
+  controller.reconcileFromServer(snapshot.state.layers, snapshot.state.activeLayerId);
+  controller.clearHistory();
+  controller.triggerRender();
+  refreshLayerPanel();
+  return { ok: true, revision: snapshot.revision, warnings };
+});
+
+async function restoreRasterState(
+  state: DocumentStateSnapshot,
+  rasterLayers: { id: string; png: string }[],
+): Promise<void> {
+  const info = controller.getInfo();
+  if (info.width !== state.width || info.height !== state.height) {
+    controller.resize({ width: state.width, height: state.height, mode: "anchor" });
+  }
+  controller.reconcileFromServer(state.layers, state.activeLayerId);
+  controller.clear({});
+  for (const layer of rasterLayers) {
+    const blob = base64PngToBlob(layer.png);
+    const restored = await controller.layers.loadIntoLayer(layer.id, blob);
+    if (!restored) throw new Error(`Unable to restore raster layer ${layer.id}`);
+  }
+  controller.reconcileFromServer(state.layers, state.activeLayerId);
+  controller.clearHistory();
+  controller.triggerRender();
+  refreshLayerPanel();
+}
+
+function base64PngToBlob(png: string): Blob {
+  const binary = atob(png);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index++) bytes[index] = binary.charCodeAt(index);
+  return new Blob([bytes], { type: "image/png" });
+}
+
 // Helper used by canvas.getState handler above — defined locally because
 // CanvasController doesn't expose blobToBase64 publicly.
 async function blobToBase64(blob: Blob): Promise<string> {
@@ -582,11 +657,13 @@ function setSeq(seq: number) {
   seqStatus.textContent = `seq: ${seq}`;
 }
 
+let remoteEventChain = Promise.resolve();
+
 const wsClient = new WSClient({
   clientId: getClientId(),
   role: "browser",
   internalHandlers,
-  onConnect: (hello) => {
+  onConnect: async (hello) => {
     setConnStatus(true);
     console.log("[connect] isPrimary:", hello.isPrimary, "serverEventSeq:", hello.serverEventSeq);
     // Sync local layer stack with the server's authoritative metadata.
@@ -602,16 +679,29 @@ const wsClient = new WSClient({
     }
     controller.reconcileFromServer(state.layers, state.activeLayerId);
     refreshLayerPanel();
+    if (hello.document?.replayable) {
+      await internalHandlers.get("document.replay")?.(hello.document);
+    }
+    wsClient.notify("event.subscribe", {});
     console.log("[connect] after reconcile, local:", JSON.stringify(controller.getInfo()));
   },
   onDisconnect: () => setConnStatus(false),
-  onPrimaryChange: (isPrimary) => setPrimaryStatus(isPrimary),
+  onPrimaryChange: (isPrimary) => {
+    setPrimaryStatus(isPrimary);
+    if (isPrimary && wsClient.connected) {
+      remoteEventChain = remoteEventChain
+        .then(() => syncCanonicalDocument())
+        .catch((error) => console.warn("[primary sync] failed:", error));
+    }
+  },
   onEvent: (type, data, seq) => {
     setSeq(seq);
     // Apply events from other clients so secondary browsers stay in sync.
     // Primary doesn't need to apply — it already executed.
     if (!wsClient.primary) {
-      applyRemoteEvent(type, data);
+      remoteEventChain = remoteEventChain
+        .then(() => applyRemoteEvent(type, data))
+        .catch((error) => console.warn("[event apply] failed:", error));
     }
   },
   getLastEventSeq: () => {
@@ -635,7 +725,19 @@ void wsClient.connect();
 // Apply events from other clients (for secondary browsers)
 // ---------------------------------------------------------------------------
 async function applyRemoteEvent(type: string, data: unknown): Promise<void> {
-  if (!type.startsWith("stroke.") && !type.startsWith("layer.") && !type.startsWith("canvas.") && !type.startsWith("filter.") && !type.startsWith("history.")) {
+  if (
+    type === "transaction.committed" ||
+    type === "document.restored" ||
+    type === "draw.batched" ||
+    type === "snapshot.loaded" ||
+    type === "canvas.imported" ||
+    type === "history.undone" ||
+    type === "history.redone"
+  ) {
+    await syncCanonicalDocument();
+    return;
+  }
+  if (!type.startsWith("stroke.") && !type.startsWith("layer.") && !type.startsWith("canvas.") && !type.startsWith("filter.")) {
     return;
   }
   const d = (data ?? {}) as { method?: string; params?: unknown };
@@ -649,5 +751,14 @@ async function applyRemoteEvent(type: string, data: unknown): Promise<void> {
     } catch (err) {
       console.warn("[event apply] failed:", err);
     }
+  }
+}
+
+async function syncCanonicalDocument(): Promise<void> {
+  try {
+    const snapshot = await wsClient.request<DocumentReplaySnapshot>("doc.get", {});
+    if (snapshot.replayable) await internalHandlers.get("document.replay")?.(snapshot);
+  } catch (error) {
+    console.warn("[document sync] failed:", error);
   }
 }

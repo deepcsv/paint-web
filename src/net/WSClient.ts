@@ -27,6 +27,7 @@ export interface WSClientOptions {
     isPrimary: boolean;
     serverEventSeq: number;
     state: unknown;
+    document?: import("../../shared/protocol.js").DocumentReplaySnapshot;
   }) => void;
   onDisconnect?: () => void;
   /** lastEventSeq to resume from (persisted across reconnects) */
@@ -155,6 +156,7 @@ export class WSClient {
         isPrimary: boolean;
         serverEventSeq: number;
         state: unknown;
+        document?: import("../../shared/protocol.js").DocumentReplaySnapshot;
       }>("sync.hello", {
         role: this.opts.role,
         clientId: this.opts.clientId,

@@ -13,6 +13,8 @@ import type {
   DrawFillParams,
   DrawTextParams,
   DrawSetPixelParams,
+  BlendMode,
+  Layer,
   LayerId,
 } from "../../shared/protocol.js";
 
@@ -104,7 +106,7 @@ export class CanvasController {
    * Called after sync.hello. Preserves local pixels for matching layer ids;
    * creates empty layers for server-only ids; drops local-only layers.
    */
-  reconcileFromServer(layers: { id: string; name: string; visible: boolean; opacity: number; blendMode: never }[], activeLayerId: string | null): void {
+  reconcileFromServer(layers: Layer[], activeLayerId: string | null): void {
     this.layers.reconcile(layers, activeLayerId);
     this.requestRender();
     this.onAfterChange?.();
@@ -228,7 +230,7 @@ export class CanvasController {
     this.onAfterChange?.();
   }
 
-  setBlendMode(params: { layerId: LayerId; blendMode: never }): void {
+  setBlendMode(params: { layerId: LayerId; blendMode: BlendMode }): void {
     this.layers.setBlendMode(params.layerId, params.blendMode);
     this.requestRender();
     this.onAfterChange?.();
@@ -253,9 +255,9 @@ export class CanvasController {
     this.onAfterChange?.();
   }
 
-  flatten(): { id: string; name: string } {
+  flatten(params?: { layerId?: string }): { id: string; name: string } {
     this.history.clear();
-    const result = this.layers.flatten();
+    const result = this.layers.flatten(params?.layerId);
     this.requestRender();
     this.onAfterChange?.();
     return result;
