@@ -1,0 +1,105 @@
+# 日落海景 — JSONL 操作脚本，paint-cli script 一次连接跑完
+# 使用 {{layerId}} 模板：会被当前 active layer id 替换
+# 用 {{layer:N}} 引用第 N 个 layer.create 返回的 id（0-indexed）
+
+# 先获取默认 layer，把它当 sky
+{"method": "layer.rename", "params": {"layerId": "{{layerId}}", "name": "sky"}}
+
+# 创建另外 3 个 layer
+{"method": "layer.create", "params": {"name": "sea"}}
+{"method": "layer.create", "params": {"name": "mountains"}}
+{"method": "layer.create", "params": {"name": "foreground"}}
+
+# === sky layer ===
+{"method": "layer.setActive", "params": {"layerId": "{{layerId}}"}}
+{"method": "draw.rect", "params": {"layerId": "{{layerId}}", "x": 0, "y": 0, "w": 1280, "h": 100, "fill": "#1a0f3d", "strokeWidth": 1}}
+{"method": "draw.rect", "params": {"layerId": "{{layerId}}", "x": 0, "y": 100, "w": 1280, "h": 100, "fill": "#4a2868", "strokeWidth": 1}}
+{"method": "draw.rect", "params": {"layerId": "{{layerId}}", "x": 0, "y": 200, "w": 1280, "h": 100, "fill": "#a14a78", "strokeWidth": 1}}
+{"method": "draw.rect", "params": {"layerId": "{{layerId}}", "x": 0, "y": 300, "w": 1280, "h": 100, "fill": "#e87858", "strokeWidth": 1}}
+{"method": "draw.rect", "params": {"layerId": "{{layerId}}", "x": 0, "y": 400, "w": 1280, "h": 60, "fill": "#f5b070", "strokeWidth": 1}}
+{"method": "draw.circle", "params": {"layerId": "{{layerId}}", "cx": 640, "cy": 380, "r": 110, "fill": "#ff904230", "strokeWidth": 1}}
+{"method": "draw.circle", "params": {"layerId": "{{layerId}}", "cx": 640, "cy": 380, "r": 90, "fill": "#ffb05060", "strokeWidth": 1}}
+{"method": "draw.circle", "params": {"layerId": "{{layerId}}", "cx": 640, "cy": 380, "r": 75, "fill": "#ffe070", "stroke": "#ff7030", "strokeWidth": 2}}
+{"method": "draw.rect", "params": {"layerId": "{{layerId}}", "x": 149, "y": 39, "w": 3, "h": 3, "fill": "#ffffff", "strokeWidth": 1}}
+{"method": "draw.rect", "params": {"layerId": "{{layerId}}", "x": 219, "y": 79, "w": 3, "h": 3, "fill": "#ffffff", "strokeWidth": 1}}
+{"method": "draw.rect", "params": {"layerId": "{{layerId}}", "x": 319, "y": 24, "w": 3, "h": 3, "fill": "#ffffff", "strokeWidth": 1}}
+{"method": "draw.rect", "params": {"layerId": "{{layerId}}", "x": 449, "y": 54, "w": 3, "h": 3, "fill": "#ffffff", "strokeWidth": 1}}
+{"method": "draw.rect", "params": {"layerId": "{{layerId}}", "x": 1099, "y": 34, "w": 3, "h": 3, "fill": "#ffffff", "strokeWidth": 1}}
+{"method": "draw.rect", "params": {"layerId": "{{layerId}}", "x": 1179, "y": 74, "w": 3, "h": 3, "fill": "#ffffff", "strokeWidth": 1}}
+{"method": "draw.rect", "params": {"layerId": "{{layerId}}", "x": 899, "y": 19, "w": 3, "h": 3, "fill": "#ffffff", "strokeWidth": 1}}
+{"method": "draw.rect", "params": {"layerId": "{{layerId}}", "x": 749, "y": 49, "w": 3, "h": 3, "fill": "#ffffff", "strokeWidth": 1}}
+
+# === sea layer ===
+{"method": "layer.setActive", "params": {"layerId": "{{layer:0}}"}}
+{"method": "draw.rect", "params": {"layerId": "{{layer:0}}", "x": 0, "y": 460, "w": 1280, "h": 260, "fill": "#0f2545", "strokeWidth": 1}}
+{"method": "draw.line", "params": {"layerId": "{{layer:0}}", "from": {"x": 0, "y": 460}, "to": {"x": 1280, "y": 460}, "color": "#5a85b5", "size": 2}}
+{"method": "draw.rect", "params": {"layerId": "{{layer:0}}", "x": 590, "y": 470, "w": 100, "h": 4, "fill": "#ffe070", "strokeWidth": 1}}
+{"method": "draw.rect", "params": {"layerId": "{{layer:0}}", "x": 585, "y": 480, "w": 110, "h": 4, "fill": "#ffe070", "strokeWidth": 1}}
+{"method": "draw.rect", "params": {"layerId": "{{layer:0}}", "x": 580, "y": 490, "w": 120, "h": 4, "fill": "#ffe070", "strokeWidth": 1}}
+{"method": "draw.rect", "params": {"layerId": "{{layer:0}}", "x": 580, "y": 500, "w": 120, "h": 4, "fill": "#ffaa50", "strokeWidth": 1}}
+{"method": "draw.rect", "params": {"layerId": "{{layer:0}}", "x": 575, "y": 510, "w": 130, "h": 4, "fill": "#ffaa50", "strokeWidth": 1}}
+{"method": "draw.rect", "params": {"layerId": "{{layer:0}}", "x": 575, "y": 525, "w": 130, "h": 4, "fill": "#ffaa50", "strokeWidth": 1}}
+{"method": "draw.rect", "params": {"layerId": "{{layer:0}}", "x": 570, "y": 545, "w": 140, "h": 4, "fill": "#cc6030", "strokeWidth": 1}}
+{"method": "draw.rect", "params": {"layerId": "{{layer:0}}", "x": 565, "y": 570, "w": 150, "h": 4, "fill": "#cc6030", "strokeWidth": 1}}
+{"method": "draw.rect", "params": {"layerId": "{{layer:0}}", "x": 560, "y": 600, "w": 160, "h": 4, "fill": "#cc6030", "strokeWidth": 1}}
+{"method": "draw.rect", "params": {"layerId": "{{layer:0}}", "x": 555, "y": 640, "w": 170, "h": 4, "fill": "#cc6030", "strokeWidth": 1}}
+{"method": "draw.rect", "params": {"layerId": "{{layer:0}}", "x": 550, "y": 690, "w": 180, "h": 4, "fill": "#cc6030", "strokeWidth": 1}}
+{"method": "draw.line", "params": {"layerId": "{{layer:0}}", "from": {"x": 200, "y": 500}, "to": {"x": 280, "y": 500}, "color": "#5a85b5", "size": 1}}
+{"method": "draw.line", "params": {"layerId": "{{layer:0}}", "from": {"x": 350, "y": 540}, "to": {"x": 450, "y": 540}, "color": "#3a6595", "size": 1}}
+{"method": "draw.line", "params": {"layerId": "{{layer:0}}", "from": {"x": 500, "y": 580}, "to": {"x": 620, "y": 580}, "color": "#2a4575", "size": 1}}
+{"method": "draw.line", "params": {"layerId": "{{layer:0}}", "from": {"x": 800, "y": 520}, "to": {"x": 890, "y": 520}, "color": "#3a6595", "size": 1}}
+{"method": "draw.line", "params": {"layerId": "{{layer:0}}", "from": {"x": 950, "y": 560}, "to": {"x": 1060, "y": 560}, "color": "#2a4575", "size": 1}}
+{"method": "draw.line", "params": {"layerId": "{{layer:0}}", "from": {"x": 1080, "y": 600}, "to": {"x": 1160, "y": 600}, "color": "#1a3565", "size": 1}}
+{"method": "draw.line", "params": {"layerId": "{{layer:0}}", "from": {"x": 100, "y": 620}, "to": {"x": 240, "y": 620}, "color": "#1a3565", "size": 1}}
+{"method": "draw.line", "params": {"layerId": "{{layer:0}}", "from": {"x": 700, "y": 680}, "to": {"x": 880, "y": 680}, "color": "#0a2555", "size": 1}}
+
+# === mountains layer ===
+{"method": "layer.setActive", "params": {"layerId": "{{layer:1}}"}}
+{"method": "draw.rect", "params": {"layerId": "{{layer:1}}", "x": 100, "y": 380, "w": 200, "h": 50, "fill": "#1f1228", "strokeWidth": 1}}
+{"method": "draw.line", "params": {"layerId": "{{layer:1}}", "from": {"x": 100, "y": 380}, "to": {"x": 200, "y": 330}, "color": "#1f1228", "size": 12}}
+{"method": "draw.line", "params": {"layerId": "{{layer:1}}", "from": {"x": 200, "y": 330}, "to": {"x": 300, "y": 380}, "color": "#1f1228", "size": 12}}
+{"method": "draw.rect", "params": {"layerId": "{{layer:1}}", "x": 480, "y": 380, "w": 320, "h": 90, "fill": "#1a0e20", "strokeWidth": 1}}
+{"method": "draw.line", "params": {"layerId": "{{layer:1}}", "from": {"x": 480, "y": 380}, "to": {"x": 640, "y": 290}, "color": "#1a0e20", "size": 14}}
+{"method": "draw.line", "params": {"layerId": "{{layer:1}}", "from": {"x": 640, "y": 290}, "to": {"x": 800, "y": 380}, "color": "#1a0e20", "size": 14}}
+{"method": "draw.rect", "params": {"layerId": "{{layer:1}}", "x": 1000, "y": 380, "w": 280, "h": 70, "fill": "#1f1228", "strokeWidth": 1}}
+{"method": "draw.line", "params": {"layerId": "{{layer:1}}", "from": {"x": 1000, "y": 380}, "to": {"x": 1140, "y": 310}, "color": "#1f1228", "size": 12}}
+{"method": "draw.line", "params": {"layerId": "{{layer:1}}", "from": {"x": 1140, "y": 310}, "to": {"x": 1280, "y": 380}, "color": "#1f1228", "size": 12}}
+{"method": "draw.rect", "params": {"layerId": "{{layer:1}}", "x": 0, "y": 400, "w": 200, "h": 60, "fill": "#2a1838", "strokeWidth": 1}}
+{"method": "draw.rect", "params": {"layerId": "{{layer:1}}", "x": 320, "y": 400, "w": 200, "h": 60, "fill": "#2a1838", "strokeWidth": 1}}
+{"method": "draw.rect", "params": {"layerId": "{{layer:1}}", "x": 820, "y": 400, "w": 200, "h": 60, "fill": "#2a1838", "strokeWidth": 1}}
+
+# === foreground layer ===
+{"method": "layer.setActive", "params": {"layerId": "{{layer:2}}"}}
+{"method": "draw.rect", "params": {"layerId": "{{layer:2}}", "x": 0, "y": 620, "w": 1280, "h": 100, "fill": "#3a2818", "strokeWidth": 1}}
+{"method": "draw.line", "params": {"layerId": "{{layer:2}}", "from": {"x": 130, "y": 640}, "to": {"x": 145, "y": 380}, "color": "#0a0508", "size": 12}}
+{"method": "draw.line", "params": {"layerId": "{{layer:2}}", "from": {"x": 145, "y": 380}, "to": {"x": 80, "y": 310}, "color": "#0a0508", "size": 4}}
+{"method": "draw.line", "params": {"layerId": "{{layer:2}}", "from": {"x": 145, "y": 380}, "to": {"x": 210, "y": 295}, "color": "#0a0508", "size": 4}}
+{"method": "draw.line", "params": {"layerId": "{{layer:2}}", "from": {"x": 145, "y": 380}, "to": {"x": 40, "y": 300}, "color": "#0a0508", "size": 4}}
+{"method": "draw.line", "params": {"layerId": "{{layer:2}}", "from": {"x": 145, "y": 380}, "to": {"x": 260, "y": 330}, "color": "#0a0508", "size": 4}}
+{"method": "draw.line", "params": {"layerId": "{{layer:2}}", "from": {"x": 145, "y": 380}, "to": {"x": 100, "y": 290}, "color": "#0a0508", "size": 4}}
+{"method": "draw.line", "params": {"layerId": "{{layer:2}}", "from": {"x": 145, "y": 380}, "to": {"x": 200, "y": 290}, "color": "#0a0508", "size": 4}}
+{"method": "draw.line", "params": {"layerId": "{{layer:2}}", "from": {"x": 145, "y": 380}, "to": {"x": 50, "y": 340}, "color": "#0a0508", "size": 4}}
+{"method": "draw.line", "params": {"layerId": "{{layer:2}}", "from": {"x": 145, "y": 380}, "to": {"x": 250, "y": 360}, "color": "#0a0508", "size": 4}}
+{"method": "draw.circle", "params": {"layerId": "{{layer:2}}", "cx": 138, "cy": 385, "r": 5, "fill": "#0a0508", "strokeWidth": 1}}
+{"method": "draw.circle", "params": {"layerId": "{{layer:2}}", "cx": 152, "cy": 385, "r": 5, "fill": "#0a0508", "strokeWidth": 1}}
+{"method": "draw.line", "params": {"layerId": "{{layer:2}}", "from": {"x": 1150, "y": 650}, "to": {"x": 1160, "y": 420}, "color": "#0a0508", "size": 10}}
+{"method": "draw.line", "params": {"layerId": "{{layer:2}}", "from": {"x": 1160, "y": 420}, "to": {"x": 1230, "y": 360}, "color": "#0a0508", "size": 3}}
+{"method": "draw.line", "params": {"layerId": "{{layer:2}}", "from": {"x": 1160, "y": 420}, "to": {"x": 1090, "y": 360}, "color": "#0a0508", "size": 3}}
+{"method": "draw.line", "params": {"layerId": "{{layer:2}}", "from": {"x": 1160, "y": 420}, "to": {"x": 1230, "y": 400}, "color": "#0a0508", "size": 3}}
+{"method": "draw.line", "params": {"layerId": "{{layer:2}}", "from": {"x": 1160, "y": 420}, "to": {"x": 1090, "y": 400}, "color": "#0a0508", "size": 3}}
+{"method": "draw.line", "params": {"layerId": "{{layer:2}}", "from": {"x": 1160, "y": 420}, "to": {"x": 1200, "y": 340}, "color": "#0a0508", "size": 3}}
+{"method": "draw.line", "params": {"layerId": "{{layer:2}}", "from": {"x": 1160, "y": 420}, "to": {"x": 1120, "y": 340}, "color": "#0a0508", "size": 3}}
+{"method": "draw.line", "params": {"layerId": "{{layer:2}}", "from": {"x": 215, "y": 180}, "to": {"x": 230, "y": 173}, "color": "#1a0e20", "size": 2}}
+{"method": "draw.line", "params": {"layerId": "{{layer:2}}", "from": {"x": 230, "y": 173}, "to": {"x": 245, "y": 180}, "color": "#1a0e20", "size": 2}}
+{"method": "draw.line", "params": {"layerId": "{{layer:2}}", "from": {"x": 255, "y": 200}, "to": {"x": 270, "y": 194}, "color": "#1a0e20", "size": 2}}
+{"method": "draw.line", "params": {"layerId": "{{layer:2}}", "from": {"x": 270, "y": 194}, "to": {"x": 285, "y": 200}, "color": "#1a0e20", "size": 2}}
+{"method": "draw.line", "params": {"layerId": "{{layer:2}}", "from": {"x": 332, "y": 170}, "to": {"x": 350, "y": 162}, "color": "#1a0e20", "size": 2}}
+{"method": "draw.line", "params": {"layerId": "{{layer:2}}", "from": {"x": 350, "y": 162}, "to": {"x": 368, "y": 170}, "color": "#1a0e20", "size": 2}}
+{"method": "draw.line", "params": {"layerId": "{{layer:2}}", "from": {"x": 905, "y": 150}, "to": {"x": 920, "y": 143}, "color": "#1a0e20", "size": 2}}
+{"method": "draw.line", "params": {"layerId": "{{layer:2}}", "from": {"x": 920, "y": 143}, "to": {"x": 935, "y": 150}, "color": "#1a0e20", "size": 2}}
+{"method": "draw.line", "params": {"layerId": "{{layer:2}}", "from": {"x": 965, "y": 180}, "to": {"x": 980, "y": 174}, "color": "#1a0e20", "size": 2}}
+{"method": "draw.line", "params": {"layerId": "{{layer:2}}", "from": {"x": 980, "y": 174}, "to": {"x": 995, "y": 180}, "color": "#1a0e20", "size": 2}}
+{"method": "draw.rect", "params": {"layerId": "{{layer:2}}", "x": 880, "y": 595, "w": 80, "h": 12, "fill": "#0a0508", "strokeWidth": 1}}
+{"method": "draw.line", "params": {"layerId": "{{layer:2}}", "from": {"x": 920, "y": 595}, "to": {"x": 920, "y": 540}, "color": "#0a0508", "size": 2}}
+{"method": "draw.line", "params": {"layerId": "{{layer:2}}", "from": {"x": 920, "y": 545}, "to": {"x": 945, "y": 575}, "color": "#0a0508", "size": 1}}
+{"method": "draw.line", "params": {"layerId": "{{layer:2}}", "from": {"x": 920, "y": 545}, "to": {"x": 945, "y": 545}, "color": "#0a0508", "size": 1}}

@@ -1,0 +1,248 @@
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --bg: #1a1a1f;
+  --panel: #25252e;
+  --panel-2: #2e2e38;
+  --text: #e8e8ec;
+  --text-muted: #8a8a96;
+  --accent: #4a9eff;
+  --border: #3a3a44;
+  --shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+}
+
+html, body {
+  height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  font-size: 13px;
+  overflow: hidden;
+}
+
+#app {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+}
+
+/* Top bar ---------------------------------------------------------------- */
+.topbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 16px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.brand { display: flex; align-items: center; gap: 8px; }
+.brand .dot {
+  width: 10px; height: 10px; border-radius: 50%;
+  background: var(--accent);
+}
+.brand .title { font-weight: 600; }
+
+.status { display: flex; gap: 8px; }
+
+.pill {
+  padding: 3px 10px;
+  border-radius: 12px;
+  background: var(--panel-2);
+  font-size: 11px;
+  color: var(--text-muted);
+}
+.pill-connected { background: #1e3a2e; color: #5dd49a; }
+.pill-disconnected { background: #3a1e1e; color: #d45d5d; }
+.pill-primary { background: #2e2a3a; color: #b59eff; }
+.pill-secondary { background: var(--panel-2); color: var(--text-muted); }
+
+/* Workspace -------------------------------------------------------------- */
+.workspace {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+
+.left-panel, .right-panel {
+  width: 220px;
+  background: var(--panel);
+  border-right: 1px solid var(--border);
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+}
+.right-panel {
+  border-right: none;
+  border-left: 1px solid var(--border);
+}
+
+.panel-section {
+  border-bottom: 1px solid var(--border);
+  padding: 12px;
+}
+.panel-section h3 {
+  font-size: 11px;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  margin-bottom: 8px;
+  letter-spacing: 0.5px;
+}
+
+/* Canvas area ------------------------------------------------------------ */
+.canvas-area {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  background: #0f0f14;
+}
+
+.canvas-wrapper {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: auto;
+  position: relative;
+}
+
+#canvas {
+  background: white;
+  box-shadow: var(--shadow);
+  cursor: crosshair;
+  image-rendering: pixelated;
+  max-width: 100%;
+  max-height: 100%;
+}
+
+.cursor-preview {
+  position: absolute;
+  border: 1px solid rgba(0, 0, 0, 0.4);
+  border-radius: 50%;
+  pointer-events: none;
+  transform: translate(-50%, -50%);
+  display: none;
+}
+
+.status-bar {
+  padding: 6px 12px;
+  background: var(--panel);
+  border-top: 1px solid var(--border);
+  display: flex;
+  justify-content: space-between;
+  font-size: 11px;
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+/* Toolbar ---------------------------------------------------------------- */
+.toolbar {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 4px;
+}
+.toolbar button {
+  padding: 8px;
+  background: var(--panel-2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 16px;
+  line-height: 1;
+  transition: background 0.15s;
+}
+.toolbar button:hover { background: var(--border); }
+.toolbar button.active {
+  background: var(--accent);
+  color: white;
+  border-color: var(--accent);
+}
+
+/* Color picker ----------------------------------------------------------- */
+.color-picker { display: flex; flex-direction: column; gap: 8px; }
+.color-picker .current {
+  display: flex; align-items: center; gap: 8px;
+}
+.color-picker .swatch {
+  width: 36px; height: 36px;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+}
+.color-picker input[type="color"] {
+  width: 36px; height: 36px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  cursor: pointer;
+  background: transparent;
+}
+.color-picker .palette {
+  display: grid;
+  grid-template-columns: repeat(6, 1fr);
+  gap: 3px;
+}
+.color-picker .palette button {
+  width: 100%; aspect-ratio: 1;
+  border: 1px solid rgba(0, 0, 0, 0.3);
+  border-radius: 3px;
+  cursor: pointer;
+  padding: 0;
+}
+.color-picker .palette button:hover {
+  transform: scale(1.15);
+}
+
+/* Size slider ------------------------------------------------------------ */
+.size-slider { display: flex; flex-direction: column; gap: 6px; }
+.size-slider input[type="range"] { width: 100%; }
+.size-slider .value {
+  display: flex;
+  justify-content: space-between;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+/* Actions ---------------------------------------------------------------- */
+.actions { display: flex; flex-direction: column; gap: 4px; }
+.actions button {
+  padding: 6px 10px;
+  background: var(--panel-2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 12px;
+  text-align: left;
+}
+.actions button:hover { background: var(--border); }
+
+/* Layers ----------------------------------------------------------------- */
+.layer-panel { display: flex; flex-direction: column; gap: 4px; }
+.layer-panel .layer-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  cursor: pointer;
+}
+.layer-panel .layer-item.active { border-color: var(--accent); }
+.layer-panel .layer-item .name { flex: 1; font-size: 12px; }
+.layer-panel .layer-item input[type="checkbox"] { margin: 0; }
+.layer-panel .layer-item input[type="range"] { width: 60px; }
+.layer-panel .add-layer {
+  padding: 6px;
+  background: var(--panel-2);
+  border: 1px dashed var(--border);
+  border-radius: 4px;
+  color: var(--text-muted);
+  cursor: pointer;
+  text-align: center;
+  font-size: 12px;
+}
+.layer-panel .add-layer:hover { background: var(--border); }

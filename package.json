@@ -1,0 +1,29 @@
+{
+  "name": "paint-web",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Monolithic web painting app with native JSON-RPC harness for AI agents",
+  "scripts": {
+    "dev": "tsx watch --ignore '*.timestamp-*' --ignore 'data/**' --ignore 'dist/**' --ignore 'dist-server/**' server/index.ts",
+    "build": "vite build && tsc -p tsconfig.server.json",
+    "start": "node dist-server/server/index.js",
+    "cli": "tsx cli/paint-cli.ts",
+    "cli:build": "tsc -p tsconfig.cli.json && chmod +x dist-cli/paint-cli.js",
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.server.json --noEmit && tsc -p tsconfig.client.json --noEmit && tsc -p tsconfig.cli.json --noEmit"
+  },
+  "dependencies": {
+    "commander": "^12.1.0",
+    "ws": "^8.18.0",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "@types/ws": "^8.5.13",
+    "tsx": "^4.19.2",
+    "typescript": "^5.6.3",
+    "vite": "^5.4.11",
+    "vitest": "^2.1.5"
+  }
+}

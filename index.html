@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="zh">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Paint Web</title>
+    <link rel="stylesheet" href="/src/styles.css" />
+  </head>
+  <body>
+    <div id="app">
+      <header class="topbar">
+        <div class="brand">
+          <span class="dot"></span>
+          <span class="title">Paint Web</span>
+        </div>
+        <div class="status">
+          <span id="conn-status" class="pill pill-disconnected">disconnected</span>
+          <span id="primary-status" class="pill pill-secondary">secondary</span>
+          <span id="seq-status" class="pill">seq: 0</span>
+        </div>
+      </header>
+
+      <div class="workspace">
+        <aside class="left-panel">
+          <div class="panel-section">
+            <h3>Tools</h3>
+            <div id="toolbar" class="toolbar"></div>
+          </div>
+          <div class="panel-section">
+            <h3>Color</h3>
+            <div id="color-picker" class="color-picker"></div>
+          </div>
+          <div class="panel-section">
+            <h3>Size</h3>
+            <div id="size-slider" class="size-slider"></div>
+          </div>
+          <div class="panel-section">
+            <h3>Actions</h3>
+            <div id="actions" class="actions">
+              <button data-action="undo">Undo</button>
+              <button data-action="redo">Redo</button>
+              <button data-action="clear">Clear</button>
+              <button data-action="export">Export PNG</button>
+            </div>
+          </div>
+        </aside>
+
+        <main class="canvas-area">
+          <div id="canvas-wrapper" class="canvas-wrapper">
+            <canvas id="canvas" width="1280" height="720"></canvas>
+            <div id="cursor-preview" class="cursor-preview"></div>
+          </div>
+          <div id="status-bar" class="status-bar">
+            <span id="cursor-pos">x: -  y: -</span>
+            <span id="canvas-info">1280 × 720</span>
+          </div>
+        </main>
+
+        <aside class="right-panel">
+          <div class="panel-section">
+            <h3>Layers</h3>
+            <div id="layer-panel" class="layer-panel"></div>
+          </div>
+        </aside>
+      </div>
+    </div>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
