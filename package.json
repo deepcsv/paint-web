@@ -9,7 +9,7 @@
     "build": "vite build && tsc -p tsconfig.server.json",
     "start": "node dist-server/server/index.js",
     "cli": "tsx cli/paint-cli.ts",
-    "cli:build": "tsc -p tsconfig.cli.json && chmod +x dist-cli/paint-cli.js",
+    "cli:build": "tsc -p tsconfig.cli.json && chmod +x dist-cli/cli/paint-cli.js",
     "test": "vitest run",
     "typecheck": "tsc -p tsconfig.server.json --noEmit && tsc -p tsconfig.client.json --noEmit && tsc -p tsconfig.cli.json --noEmit"
   },
