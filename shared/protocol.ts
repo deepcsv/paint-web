@@ -58,6 +58,12 @@ export const RpcErrorCode = {
   OUT_OF_BOUNDS: -32005,
   SNAPSHOT_TOO_LARGE: -32006,
   NOT_AUTHORIZED: -32007,
+  DOCUMENT_CONFLICT: -32008,
+  TRANSACTION_ABORTED: -32009,
+  VERSION_NOT_FOUND: -32010,
+  ASSET_NOT_FOUND: -32011,
+  ASSET_TOO_LARGE: -32012,
+  INVALID_ASSET: -32013,
 } as const;
 
 // ---------------------------------------------------------------------------
@@ -87,6 +93,11 @@ export type Rect = z.infer<typeof Rect>;
 
 export const LayerId = z.string();
 export type LayerId = z.infer<typeof LayerId>;
+
+export const AssetId = z.string().regex(/^A_[a-f0-9]{64}$/);
+export type AssetId = z.infer<typeof AssetId>;
+export const AssetMimeType = z.enum(["image/png", "image/jpeg"]);
+export type AssetMimeType = z.infer<typeof AssetMimeType>;
 
 export const BlendMode = z.enum([
   "source-over",
@@ -175,10 +186,15 @@ export const CanvasExportResult = z.object({
 });
 export type CanvasExportResult = z.infer<typeof CanvasExportResult>;
 
-export const CanvasImportParams = z.object({
-  url: z.string(),
-  layerId: LayerId.optional(),
-});
+export const CanvasImportParams = z
+  .object({
+    url: z.string().min(1).optional(),
+    assetId: AssetId.optional(),
+    layerId: LayerId.optional(),
+  })
+  .refine((value) => Number(Boolean(value.url)) + Number(Boolean(value.assetId)) === 1, {
+    message: "Exactly one of url or assetId is required",
+  });
 export type CanvasImportParams = z.infer<typeof CanvasImportParams>;
 
 export const CanvasGetRegionParams = z.object({
@@ -194,6 +210,63 @@ export const CanvasGetRegionResult = z.object({
   expiresAt: z.number(),
 });
 export type CanvasGetRegionResult = z.infer<typeof CanvasGetRegionResult>;
+
+export const CanvasAnalyzeParams = z
+  .object({
+    layerId: LayerId.optional(),
+    stride: z.number().int().min(1).max(32).default(1),
+    alphaThreshold: z.number().int().min(0).max(255).default(1),
+    histogramBins: z.number().int().min(4).max(64).default(16),
+    dominantColors: z.number().int().min(1).max(12).default(5),
+    includeBackground: z.boolean().default(false),
+  })
+  .optional();
+export type CanvasAnalyzeParams = z.infer<typeof CanvasAnalyzeParams>;
+
+export const RgbaColor = z.object({
+  r: z.number().int().min(0).max(255),
+  g: z.number().int().min(0).max(255),
+  b: z.number().int().min(0).max(255),
+  a: z.number().int().min(0).max(255),
+  hex: z.string().regex(/^#[a-f0-9]{8}$/),
+});
+export type RgbaColor = z.infer<typeof RgbaColor>;
+
+export const CanvasAnalyzeResult = z.object({
+  width: z.number().int().positive(),
+  height: z.number().int().positive(),
+  stride: z.number().int().positive(),
+  sampledPixels: z.number().int().nonnegative(),
+  opaquePixels: z.number().int().nonnegative(),
+  coverage: z.number().min(0).max(1),
+  bounds: z
+    .object({ x: z.number(), y: z.number(), w: z.number(), h: z.number() })
+    .nullable(),
+  average: RgbaColor,
+  luminance: z.object({
+    min: z.number().min(0).max(1),
+    max: z.number().min(0).max(1),
+    mean: z.number().min(0).max(1),
+    histogram: z.array(z.number().int().nonnegative()),
+  }),
+  dominant: z.array(
+    z.object({ color: RgbaColor, count: z.number().int().positive(), ratio: z.number() }),
+  ),
+});
+export type CanvasAnalyzeResult = z.infer<typeof CanvasAnalyzeResult>;
+
+export const CanvasSampleParams = z.object({
+  layerId: LayerId.optional(),
+  points: z
+    .array(z.object({ x: z.number().int().nonnegative(), y: z.number().int().nonnegative() }))
+    .min(1)
+    .max(512),
+});
+export type CanvasSampleParams = z.infer<typeof CanvasSampleParams>;
+export const CanvasSampleResult = z.object({
+  samples: z.array(z.object({ x: z.number(), y: z.number(), color: RgbaColor })),
+});
+export type CanvasSampleResult = z.infer<typeof CanvasSampleResult>;
 
 // ---------------------------------------------------------------------------
 // layer.* methods
@@ -250,6 +323,28 @@ export const LayerMergeParams = z.object({
   intoId: LayerId,
 });
 export type LayerMergeParams = z.infer<typeof LayerMergeParams>;
+export const LayerFlattenParams = z
+  .object({
+    /** Server-selected id used to keep all renderers deterministic. */
+    layerId: LayerId.optional(),
+  })
+  .optional();
+export type LayerFlattenParams = z.infer<typeof LayerFlattenParams>;
+export const LayerFlattenResult = z.object({ id: LayerId, name: z.string() });
+export type LayerFlattenResult = z.infer<typeof LayerFlattenResult>;
+
+export const LayerTransformParams = z.object({
+  layerId: LayerId,
+  translateX: z.number().default(0),
+  translateY: z.number().default(0),
+  scaleX: z.number().min(-100).max(100).refine((value) => value !== 0).default(1),
+  scaleY: z.number().min(-100).max(100).refine((value) => value !== 0).default(1),
+  rotate: z.number().min(-36000).max(36000).default(0),
+  pivotX: z.number().optional(),
+  pivotY: z.number().optional(),
+  smoothing: z.boolean().default(true),
+});
+export type LayerTransformParams = z.infer<typeof LayerTransformParams>;
 
 // ---------------------------------------------------------------------------
 // draw.* methods
@@ -343,6 +438,113 @@ export const DrawSetPixelParams = z.object({
   color: Color,
 });
 export type DrawSetPixelParams = z.infer<typeof DrawSetPixelParams>;
+
+export const PathCommand = z.discriminatedUnion("op", [
+  z.object({ op: z.literal("M"), x: z.number(), y: z.number() }),
+  z.object({ op: z.literal("L"), x: z.number(), y: z.number() }),
+  z.object({ op: z.literal("Q"), cx: z.number(), cy: z.number(), x: z.number(), y: z.number() }),
+  z.object({
+    op: z.literal("C"),
+    c1x: z.number(),
+    c1y: z.number(),
+    c2x: z.number(),
+    c2y: z.number(),
+    x: z.number(),
+    y: z.number(),
+  }),
+  z.object({ op: z.literal("Z") }),
+]);
+export type PathCommand = z.infer<typeof PathCommand>;
+
+export const DrawPathParams = z
+  .object({
+    layerId: LayerId,
+    commands: z.array(PathCommand).min(2).max(4096),
+    stroke: Color.optional(),
+    fill: Color.optional(),
+    strokeWidth: z.number().positive().max(500).default(1),
+    opacity: z.number().min(0).max(1).default(1),
+    fillRule: z.enum(["nonzero", "evenodd"]).default("nonzero"),
+    lineCap: z.enum(["butt", "round", "square"]).default("round"),
+    lineJoin: z.enum(["round", "bevel", "miter"]).default("round"),
+  })
+  .refine((value) => value.commands[0]?.op === "M", {
+    message: "Path must start with an M command",
+    path: ["commands", 0],
+  })
+  .refine((value) => Boolean(value.stroke || value.fill), {
+    message: "Path requires stroke or fill",
+  });
+export type DrawPathParams = z.infer<typeof DrawPathParams>;
+
+export const GradientStop = z.object({
+  offset: z.number().min(0).max(1),
+  color: Color,
+});
+export type GradientStop = z.infer<typeof GradientStop>;
+
+export const GradientDefinition = z.discriminatedUnion("type", [
+  z.object({ type: z.literal("linear"), from: Point, to: Point }),
+  z.object({
+    type: z.literal("radial"),
+    inner: z.object({ x: z.number(), y: z.number(), r: z.number().nonnegative() }),
+    outer: z.object({ x: z.number(), y: z.number(), r: z.number().positive() }),
+  }),
+]);
+export type GradientDefinition = z.infer<typeof GradientDefinition>;
+
+export const GradientShape = z.discriminatedUnion("type", [
+  z.object({
+    type: z.literal("rect"),
+    x: z.number(),
+    y: z.number(),
+    w: z.number().positive(),
+    h: z.number().positive(),
+  }),
+  z.object({ type: z.literal("circle"), cx: z.number(), cy: z.number(), r: z.number().positive() }),
+  z.object({
+    type: z.literal("ellipse"),
+    cx: z.number(),
+    cy: z.number(),
+    rx: z.number().positive(),
+    ry: z.number().positive(),
+  }),
+]);
+export type GradientShape = z.infer<typeof GradientShape>;
+
+export const DrawGradientParams = z
+  .object({
+    layerId: LayerId,
+    gradient: GradientDefinition,
+    shape: GradientShape,
+    stops: z.array(GradientStop).min(2).max(32),
+    opacity: z.number().min(0).max(1).default(1),
+  })
+  .superRefine((value, ctx) => {
+    for (let index = 1; index < value.stops.length; index++) {
+      if (value.stops[index]!.offset < value.stops[index - 1]!.offset) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "Gradient stops must be ordered by offset",
+          path: ["stops", index, "offset"],
+        });
+      }
+    }
+  });
+export type DrawGradientParams = z.infer<typeof DrawGradientParams>;
+
+export const DrawImageParams = z.object({
+  layerId: LayerId,
+  assetId: AssetId,
+  x: z.number(),
+  y: z.number(),
+  width: z.number().positive().optional(),
+  height: z.number().positive().optional(),
+  opacity: z.number().min(0).max(1).default(1),
+  rotate: z.number().min(-36000).max(36000).default(0),
+  smoothing: z.boolean().default(true),
+});
+export type DrawImageParams = z.infer<typeof DrawImageParams>;
 
 export const DrawBatchParams = z.object({
   operations: z
@@ -442,6 +644,183 @@ export const SnapshotLoadResult = z.object({
 export type SnapshotLoadResult = z.infer<typeof SnapshotLoadResult>;
 
 // ---------------------------------------------------------------------------
+// asset.* — P1 immutable content-addressed raster assets
+// ---------------------------------------------------------------------------
+
+export const AssetMetadata = z.object({
+  id: AssetId,
+  sha256: z.string().regex(/^[a-f0-9]{64}$/),
+  mimeType: AssetMimeType,
+  size: z.number().int().positive(),
+  width: z.number().int().positive(),
+  height: z.number().int().positive(),
+  name: z.string().optional(),
+  createdAt: z.number(),
+  url: z.string(),
+});
+export type AssetMetadata = z.infer<typeof AssetMetadata>;
+
+export const AssetPutParams = z.object({
+  data: z
+    .string()
+    .min(4)
+    .max(28_000_000)
+    .regex(/^[A-Za-z0-9+/]*={0,2}$/, "Expected base64 asset data"),
+  mimeType: AssetMimeType,
+  name: z.string().min(1).max(128).optional(),
+});
+export type AssetPutParams = z.infer<typeof AssetPutParams>;
+export const AssetPutResult = AssetMetadata.extend({ existing: z.boolean() });
+export type AssetPutResult = z.infer<typeof AssetPutResult>;
+
+export const AssetGetParams = z.object({ assetId: AssetId });
+export const AssetListParams = z
+  .object({ limit: z.number().int().positive().max(1000).default(100) })
+  .optional();
+export const AssetListResult = z.object({ assets: z.array(AssetMetadata) });
+export type AssetListResult = z.infer<typeof AssetListResult>;
+
+// ---------------------------------------------------------------------------
+// transaction.* and doc.* — P0 canonical document/version foundation
+// ---------------------------------------------------------------------------
+
+export const DocumentStateSnapshot = z.object({
+  width: z.number().int().positive(),
+  height: z.number().int().positive(),
+  layers: z.array(Layer).min(1),
+  activeLayerId: LayerId,
+});
+export type DocumentStateSnapshot = z.infer<typeof DocumentStateSnapshot>;
+
+export const DocumentRasterLayer = z.object({
+  id: LayerId,
+  png: z.string(),
+});
+export type DocumentRasterLayer = z.infer<typeof DocumentRasterLayer>;
+
+export const DocumentOperation = z.object({
+  id: z.string(),
+  method: z.string(),
+  params: z.unknown().optional(),
+  result: z.unknown().optional(),
+  clientId: z.string(),
+  ts: z.number(),
+  transactionId: z.string().optional(),
+});
+export type DocumentOperation = z.infer<typeof DocumentOperation>;
+
+export const DocumentReplaySnapshot = z.object({
+  schemaVersion: z.literal(1),
+  documentId: z.string(),
+  title: z.string(),
+  revision: z.number().int().nonnegative(),
+  commitId: z.string(),
+  branch: z.string(),
+  createdAt: z.number(),
+  updatedAt: z.number(),
+  baseState: DocumentStateSnapshot,
+  state: DocumentStateSnapshot,
+  baseRaster: z.array(DocumentRasterLayer),
+  operations: z.array(DocumentOperation),
+  replayable: z.boolean(),
+});
+export type DocumentReplaySnapshot = z.infer<typeof DocumentReplaySnapshot>;
+
+export const DocumentCommitSummary = z.object({
+  id: z.string(),
+  parentId: z.string().nullable(),
+  branch: z.string(),
+  revision: z.number().int().nonnegative(),
+  ts: z.number(),
+  clientId: z.string(),
+  message: z.string(),
+  operationCount: z.number().int().nonnegative(),
+});
+export type DocumentCommitSummary = z.infer<typeof DocumentCommitSummary>;
+
+export const TransactionOperation = z.object({
+  method: z.string().min(1),
+  params: z.unknown().optional(),
+});
+export type TransactionOperation = z.infer<typeof TransactionOperation>;
+
+export const TransactionExecuteParams = z.object({
+  idempotencyKey: z.string().min(1).max(128),
+  message: z.string().max(256).default("Atomic edit"),
+  operations: z.array(TransactionOperation).min(1).max(256),
+});
+export type TransactionExecuteParams = z.infer<typeof TransactionExecuteParams>;
+export const TransactionExecuteResult = z.object({
+  transactionId: z.string(),
+  commitId: z.string(),
+  revision: z.number().int().nonnegative(),
+  replayed: z.boolean(),
+  results: z.array(z.unknown()),
+});
+export type TransactionExecuteResult = z.infer<typeof TransactionExecuteResult>;
+
+export const DocumentGetParams = z
+  .object({ commitId: z.string().optional() })
+  .optional();
+export const DocumentHistoryParams = z
+  .object({ limit: z.number().int().positive().max(1000).default(100) })
+  .optional();
+export const DocumentHistoryResult = z.object({
+  currentCommitId: z.string(),
+  currentBranch: z.string(),
+  canUndo: z.boolean(),
+  canRedo: z.boolean(),
+  commits: z.array(DocumentCommitSummary),
+});
+export type DocumentHistoryResult = z.infer<typeof DocumentHistoryResult>;
+
+export const DocumentStepParams = z.object({
+  steps: z.number().int().positive().max(100).default(1),
+});
+export const DocumentRestoreResult = z.object({
+  commitId: z.string(),
+  revision: z.number().int().nonnegative(),
+  branch: z.string(),
+});
+export type DocumentRestoreResult = z.infer<typeof DocumentRestoreResult>;
+
+const RefName = z
+  .string()
+  .min(1)
+  .max(64)
+  .regex(/^[A-Za-z0-9][A-Za-z0-9._/-]*$/);
+export const DocumentBranchCreateParams = z.object({ name: RefName });
+export const DocumentBranchSwitchParams = z.object({ name: RefName });
+export const DocumentBranchListResult = z.object({
+  current: z.string(),
+  branches: z.array(z.object({ name: z.string(), commitId: z.string() })),
+});
+export const DocumentCheckpointCreateParams = z.object({
+  name: RefName,
+  message: z.string().max(256).optional(),
+});
+export const DocumentCheckpointRestoreParams = z.object({ name: RefName });
+export const DocumentCheckpointListResult = z.object({
+  checkpoints: z.array(
+    z.object({ name: z.string(), commitId: z.string(), revision: z.number() }),
+  ),
+});
+
+export const DocumentRenderParams = z.object({
+  format: z.literal("svg").default("svg"),
+  commitId: z.string().optional(),
+});
+export const DocumentRenderResult = z.object({
+  url: z.string(),
+  size: z.number(),
+  expiresAt: z.number(),
+  mimeType: z.literal("image/svg+xml"),
+  digest: z.string(),
+  warnings: z.array(z.string()),
+});
+export type DocumentRenderResult = z.infer<typeof DocumentRenderResult>;
+
+// ---------------------------------------------------------------------------
 // event.* methods
 // ---------------------------------------------------------------------------
 
@@ -465,6 +844,7 @@ export const SyncHelloResult = z.object({
   isPrimary: z.boolean(),
   serverEventSeq: z.number(),
   state: CanvasGetInfoResult,
+  document: DocumentReplaySnapshot.optional(),
 });
 export type SyncHelloResult = z.infer<typeof SyncHelloResult>;
 
@@ -488,9 +868,11 @@ export const EVENT_TYPES = [
   "layer.reordered",
   "layer.merged",
   "layer.flattened",
+  "layer.transformed",
   "canvas.resized",
   "canvas.cleared",
   "canvas.filled",
+  "canvas.imported",
   "history.undone",
   "history.redone",
   "history.cleared",
@@ -498,6 +880,11 @@ export const EVENT_TYPES = [
   "snapshot.loaded",
   "filter.applied",
   "draw.batched",
+  "transaction.committed",
+  "document.committed",
+  "document.restored",
+  "document.branch.created",
+  "document.checkpoint.created",
   "client.connected",
   "client.disconnected",
   "primary.changed",
@@ -527,8 +914,10 @@ export const METHODS: Record<string, MethodDef> = {
   "canvas.clear": { params: CanvasClearParams, needsPrimary: true, emitsEvent: "canvas.cleared" },
   "canvas.fill": { params: CanvasFillParams, needsPrimary: true, emitsEvent: "canvas.filled" },
   "canvas.export": { params: CanvasExportParams, result: CanvasExportResult, needsPrimary: true },
-  "canvas.import": { params: CanvasImportParams, needsPrimary: true },
+  "canvas.import": { params: CanvasImportParams, needsPrimary: true, emitsEvent: "canvas.imported" },
   "canvas.getRegion": { params: CanvasGetRegionParams, result: CanvasGetRegionResult, needsPrimary: true },
+  "canvas.analyze": { params: CanvasAnalyzeParams, result: CanvasAnalyzeResult, needsPrimary: true },
+  "canvas.sample": { params: CanvasSampleParams, result: CanvasSampleResult, needsPrimary: true },
 
   // layer.*
   "layer.create": { params: LayerCreateParams, result: LayerCreateResult, needsPrimary: true, emitsEvent: "layer.created" },
@@ -541,7 +930,8 @@ export const METHODS: Record<string, MethodDef> = {
   "layer.rename": { params: LayerRenameParams, needsPrimary: true, emitsEvent: "layer.changed" },
   "layer.reorder": { params: LayerReorderParams, needsPrimary: true, emitsEvent: "layer.reordered" },
   "layer.merge": { params: LayerMergeParams, needsPrimary: true, emitsEvent: "layer.merged" },
-  "layer.flatten": { needsPrimary: true, emitsEvent: "layer.flattened" },
+  "layer.flatten": { params: LayerFlattenParams, result: LayerFlattenResult, needsPrimary: true, emitsEvent: "layer.flattened" },
+  "layer.transform": { params: LayerTransformParams, needsPrimary: true, emitsEvent: "layer.transformed" },
 
   // draw.*
   "draw.stroke": { params: DrawStrokeParams, needsPrimary: true, emitsEvent: "stroke.committed" },
@@ -552,6 +942,9 @@ export const METHODS: Record<string, MethodDef> = {
   "draw.fill": { params: DrawFillParams, needsPrimary: true, emitsEvent: "stroke.committed" },
   "draw.text": { params: DrawTextParams, needsPrimary: true, emitsEvent: "stroke.committed" },
   "draw.setPixel": { params: DrawSetPixelParams, needsPrimary: true, emitsEvent: "stroke.committed" },
+  "draw.path": { params: DrawPathParams, needsPrimary: true, emitsEvent: "stroke.committed" },
+  "draw.gradient": { params: DrawGradientParams, needsPrimary: true, emitsEvent: "stroke.committed" },
+  "draw.image": { params: DrawImageParams, needsPrimary: true, emitsEvent: "stroke.committed" },
   "draw.batch": { params: DrawBatchParams, result: DrawBatchResult, needsPrimary: true, emitsEvent: "draw.batched" },
 
   // history.*
@@ -571,6 +964,32 @@ export const METHODS: Record<string, MethodDef> = {
   // snapshot.*
   "snapshot.save": { params: SnapshotSaveParams, result: SnapshotSaveResult, needsPrimary: true, emitsEvent: "snapshot.saved" },
   "snapshot.load": { params: SnapshotLoadParams, result: SnapshotLoadResult, needsPrimary: true, emitsEvent: "snapshot.loaded" },
+
+  // asset.* — immutable content-addressed raster library.
+  "asset.put": { params: AssetPutParams, result: AssetPutResult },
+  "asset.get": { params: AssetGetParams, result: AssetMetadata },
+  "asset.list": { params: AssetListParams, result: AssetListResult },
+
+  // transaction.* — validated, serialized and rolled back as one commit.
+  "transaction.execute": {
+    params: TransactionExecuteParams,
+    result: TransactionExecuteResult,
+    needsPrimary: true,
+    emitsEvent: "transaction.committed",
+  },
+
+  // doc.* — canonical document, exact version history and branching.
+  "doc.get": { params: DocumentGetParams, result: DocumentReplaySnapshot },
+  "doc.history": { params: DocumentHistoryParams, result: DocumentHistoryResult },
+  "doc.undo": { params: DocumentStepParams, result: DocumentRestoreResult, needsPrimary: true, emitsEvent: "document.restored" },
+  "doc.redo": { params: DocumentStepParams, result: DocumentRestoreResult, needsPrimary: true, emitsEvent: "document.restored" },
+  "doc.branch.create": { params: DocumentBranchCreateParams, result: DocumentRestoreResult, emitsEvent: "document.branch.created" },
+  "doc.branch.list": { result: DocumentBranchListResult },
+  "doc.branch.switch": { params: DocumentBranchSwitchParams, result: DocumentRestoreResult, needsPrimary: true, emitsEvent: "document.restored" },
+  "doc.checkpoint.create": { params: DocumentCheckpointCreateParams, result: DocumentRestoreResult, emitsEvent: "document.checkpoint.created" },
+  "doc.checkpoint.list": { result: DocumentCheckpointListResult },
+  "doc.checkpoint.restore": { params: DocumentCheckpointRestoreParams, result: DocumentRestoreResult, needsPrimary: true, emitsEvent: "document.restored" },
+  "doc.render": { params: DocumentRenderParams, result: DocumentRenderResult },
 
   // ops.* — operation log (mutation history). Read-only queries + clear.
   // No emitsEvent: ops.list/clear are about the log itself, not canvas state.

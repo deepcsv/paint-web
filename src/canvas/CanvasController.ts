@@ -4,7 +4,14 @@ import { StrokeEngine } from "./StrokeEngine.js";
 import { ShapeRenderer } from "./ShapeRenderer.js";
 import { floodFill } from "./FillEngine.js";
 import { FilterEngine } from "./FilterEngine.js";
+import { analyzePixels, samplePixels } from "./CanvasAnalyzer.js";
 import type {
+  CanvasAnalyzeParams,
+  CanvasAnalyzeResult,
+  CanvasSampleParams,
+  CanvasSampleResult,
+  DrawGradientParams,
+  DrawImageParams,
   DrawStrokeParams,
   DrawLineParams,
   DrawRectParams,
@@ -13,6 +20,10 @@ import type {
   DrawFillParams,
   DrawTextParams,
   DrawSetPixelParams,
+  DrawPathParams,
+  LayerTransformParams,
+  BlendMode,
+  Layer,
   LayerId,
 } from "../../shared/protocol.js";
 
@@ -104,7 +115,7 @@ export class CanvasController {
    * Called after sync.hello. Preserves local pixels for matching layer ids;
    * creates empty layers for server-only ids; drops local-only layers.
    */
-  reconcileFromServer(layers: { id: string; name: string; visible: boolean; opacity: number; blendMode: never }[], activeLayerId: string | null): void {
+  reconcileFromServer(layers: Layer[], activeLayerId: string | null): void {
     this.layers.reconcile(layers, activeLayerId);
     this.requestRender();
     this.onAfterChange?.();
@@ -184,13 +195,34 @@ export class CanvasController {
     return { png: await blobToBase64(blob) };
   }
 
-  async import(params: { url: string; layerId?: LayerId }): Promise<void> {
+  async import(params: { url?: string; assetId?: string; layerId?: LayerId }): Promise<void> {
     const targetLayer = params.layerId ?? this.layers.activeLayerId;
     if (!targetLayer) throw new Error("no active layer");
+    const url = params.url ?? (params.assetId ? `/asset/${encodeURIComponent(params.assetId)}` : "");
+    if (!url) throw new Error("asset url is required");
+    const response = await fetch(url);
+    if (!response.ok) throw new Error(`asset fetch failed: ${response.status}`);
+    const blob = await response.blob();
     this.snapshotForUndo(targetLayer);
-    const blob = await fetch(params.url).then((r) => r.blob());
-    await this.layers.loadIntoLayer(targetLayer, blob);
+    const loaded = await this.layers.loadIntoLayer(targetLayer, blob);
+    if (!loaded) throw new Error("asset decode failed");
     this.requestRender();
+  }
+
+  analyze(params: NonNullable<CanvasAnalyzeParams>): CanvasAnalyzeResult {
+    const image = params.layerId
+      ? this.layers.getLayerImageData(params.layerId)
+      : this.layers.getCompositeImageData(params.includeBackground);
+    if (!image) throw new Error("layer not found");
+    return analyzePixels(image, params);
+  }
+
+  sample(params: CanvasSampleParams): CanvasSampleResult {
+    const image = params.layerId
+      ? this.layers.getLayerImageData(params.layerId)
+      : this.layers.getCompositeImageData(true);
+    if (!image) throw new Error("layer not found");
+    return samplePixels(image, params.points);
   }
 
   // -------------------------------------------------------------------------
@@ -228,7 +260,7 @@ export class CanvasController {
     this.onAfterChange?.();
   }
 
-  setBlendMode(params: { layerId: LayerId; blendMode: never }): void {
+  setBlendMode(params: { layerId: LayerId; blendMode: BlendMode }): void {
     this.layers.setBlendMode(params.layerId, params.blendMode);
     this.requestRender();
     this.onAfterChange?.();
@@ -253,12 +285,18 @@ export class CanvasController {
     this.onAfterChange?.();
   }
 
-  flatten(): { id: string; name: string } {
+  flatten(params?: { layerId?: string }): { id: string; name: string } {
     this.history.clear();
-    const result = this.layers.flatten();
+    const result = this.layers.flatten(params?.layerId);
     this.requestRender();
     this.onAfterChange?.();
     return result;
+  }
+
+  transformLayer(params: LayerTransformParams): void {
+    this.snapshotForUndo(params.layerId);
+    if (!this.layers.transformLayer(params)) throw new Error("layer not found");
+    this.requestRender();
   }
 
   // -------------------------------------------------------------------------
@@ -348,6 +386,44 @@ export class CanvasController {
     const ctx = this.getCtx(params.layerId);
     if (!ctx) return;
     ShapeRenderer.setPixel(ctx, params.x, params.y, params.color);
+    this.requestRender();
+  }
+
+  path(params: DrawPathParams): void {
+    this.snapshotForUndo(params.layerId);
+    const ctx = this.getCtx(params.layerId);
+    if (!ctx) return;
+    ShapeRenderer.path(ctx, params);
+    this.requestRender();
+  }
+
+  gradient(params: DrawGradientParams): void {
+    this.snapshotForUndo(params.layerId);
+    const ctx = this.getCtx(params.layerId);
+    if (!ctx) return;
+    ShapeRenderer.gradient(ctx, params);
+    this.requestRender();
+  }
+
+  async image(params: DrawImageParams): Promise<void> {
+    const ctx = this.getCtx(params.layerId);
+    if (!ctx) return;
+    const response = await fetch(`/asset/${encodeURIComponent(params.assetId)}`);
+    if (!response.ok) throw new Error(`asset fetch failed: ${response.status}`);
+    const bitmap = await createImageBitmap(await response.blob());
+    this.snapshotForUndo(params.layerId);
+    const width = params.width ?? bitmap.width;
+    const height = params.height ?? bitmap.height;
+    const centerX = params.x + width / 2;
+    const centerY = params.y + height / 2;
+    ctx.save();
+    ctx.globalAlpha = params.opacity;
+    ctx.imageSmoothingEnabled = params.smoothing;
+    ctx.translate(centerX, centerY);
+    ctx.rotate((params.rotate * Math.PI) / 180);
+    ctx.drawImage(bitmap, -width / 2, -height / 2, width, height);
+    ctx.restore();
+    bitmap.close?.();
     this.requestRender();
   }
 

@@ -36,12 +36,56 @@ Open `http://127.0.0.1:8080` in your browser — you're now the primary client. 
                               ▼
                      data/<name>.png
                      data/state.json
+                     data/document.json
+                     data/assets/*
 ```
 
-- **Browser is authoritative for pixels** — server has no native canvas dependency.
-- **Server is authoritative for metadata** — canvas size, layers, history summary, event log.
+- **Browser is the high-fidelity raster renderer** — server has no native canvas dependency.
+- **Server is authoritative for the artwork document** — structure, operations, versions, branches, baselines, and audit log.
 - **`primary` browser** is elected by connect order; agent RPCs needing pixels are proxied to it.
 - **Single process** — built-in HTTP + `ws` package + Vite middleware in dev.
+
+## P0 canonical document foundation
+
+The server now maintains an immutable, versioned artwork document in addition
+to the compatibility operation log:
+
+- every native mutation becomes a canonical commit;
+- `transaction.execute` is serialized, idempotent, and restores all layer
+  pixels plus metadata when any operation fails;
+- exact `doc.undo` / `doc.redo`, named checkpoints, and branch switching are
+  persistent across browser sessions;
+- document persistence uses atomic replacement with a recoverable backup;
+- the first primary browser captures the existing per-layer raster baseline,
+  so the first brush stroke is independently undoable and an upgraded
+  workspace is not flattened or discarded;
+- external imports and loaded snapshots create exact raster keyframes instead
+  of leaving non-replayable URLs in history;
+- `doc.render` produces deterministic SVG without a primary browser.
+
+The browser remains the high-fidelity PNG/JPEG renderer in P0, but it is now a
+recoverable rendering terminal rather than the only holder of artwork history.
+
+## P1 creative engine
+
+P1 adds durable visual building blocks and machine-readable feedback on top of
+the canonical document:
+
+- PNG/JPEG files enter an immutable, content-addressed asset library through
+  `asset.put`; repeated content is deduplicated by SHA-256;
+- `draw.path`, `draw.gradient`, and `draw.image` provide native curves,
+  reusable gradients, and deterministic image placement;
+- `layer.transform` bakes translation, scaling, rotation, and pivoted affine
+  transforms into a layer;
+- `canvas.analyze` reports coverage, painted bounds, average/dominant colors,
+  and a luminance histogram, while `canvas.sample` reads exact RGBA values;
+- asset-backed imports and images participate in transactions, replay,
+  branching, browser recovery, and headless SVG rendering without relying on
+  an external URL.
+
+The intended agent loop is now: upload stable assets, commit a coherent pass,
+measure the canvas, inspect a snapshot when needed, then refine from the same
+versioned document.
 
 ## CLI
 
@@ -61,6 +105,18 @@ npm run cli -- load --name mywork
 npm run cli -- history undo --steps 3
 npm run cli -- filter blur --radius 3
 npm run cli -- subscribe            # follow all events
+npm run cli -- transaction pass.jsonl --idempotency-key pass-01
+npm run cli -- doc history
+npm run cli -- doc checkpoint create --name approved-v1
+npm run cli -- doc branch create --name experiments/neon
+npm run cli -- doc render --out artwork.svg
+npm run cli -- asset add reference.png --name reference
+npm run cli -- image --asset A_<sha256> --x 80 --y 60 --width 320
+npm run cli -- path silhouette.json --fill "#151629"
+npm run cli -- gradient glow.json
+npm run cli -- layer transform --id L_subject --translate-x 24 --rotate -3
+npm run cli -- analyze --stride 2 --colors 8
+npm run cli -- sample --points "80,60;240,180"
 ```
 
 Global options:
@@ -89,6 +145,10 @@ Environment variables:
 - Optional token auth.
 - Snapshot names are sanitized (regex `[a-zA-Z0-9_-]+`, max 64 chars).
 - Temporary export URLs (`/snapshot/<id>`) auto-expire in 30s.
+- Asset uploads accept verified PNG/JPEG bytes only, capped at 20 MiB and
+  8192×8192 pixels.
+- Assets are addressed by their SHA-256 digest and served read-only with
+  immutable cache headers from `/asset/<id>`.
 
 ## Tech stack
 
@@ -110,6 +170,7 @@ paint-web/
 ├── server/             # Node.js backend
 │   ├── index.ts        # Entry — starts HTTP + WS + Vite
 │   ├── http-server.ts  # Static + /snapshot/* + /healthz
+│   ├── asset-store.ts  # Immutable content-addressed PNG/JPEG library
 │   ├── ws-server.ts    # Connection lifecycle + dispatch
 │   ├── rpc/            # JSON-RPC router + errors
 │   ├── handlers/       # canvas/layer/draw/history/filter/snapshot
@@ -121,14 +182,14 @@ paint-web/
 │   └── protocol.ts     # All RPC types + zod schemas + method registry
 ├── src/                # Browser client
 │   ├── main.ts         # App entry
-│   ├── canvas/         # LayerStack, StrokeEngine, FillEngine, ...
+│   ├── canvas/         # LayerStack, StrokeEngine, CanvasAnalyzer, ...
 │   ├── input/          # PointerHandler
 │   ├── ui/             # Toolbar, ColorPicker, LayerPanel, ...
 │   └── net/            # WSClient
 ├── cli/                # paint-cli
 │   └── paint-cli.ts
 ├── tests/              # vitest
-└── data/               # gitignored — PNG snapshots + state.json
+└── data/               # runtime state, snapshots, document and asset blobs
 ```
 
 ## Full protocol reference

@@ -70,4 +70,22 @@ export class RpcError extends Error {
   static notAuthorized() {
     return new RpcError(RpcErrorCode.NOT_AUTHORIZED, "Not authorized");
   }
+  static documentConflict(message: string, data?: unknown) {
+    return new RpcError(RpcErrorCode.DOCUMENT_CONFLICT, message, data);
+  }
+  static transactionAborted(message: string, data?: unknown) {
+    return new RpcError(RpcErrorCode.TRANSACTION_ABORTED, message, data);
+  }
+  static versionNotFound(message: string, data?: unknown) {
+    return new RpcError(RpcErrorCode.VERSION_NOT_FOUND, message, data);
+  }
+  static assetNotFound(assetId: string) {
+    return new RpcError(RpcErrorCode.ASSET_NOT_FOUND, `Asset not found: ${assetId}`);
+  }
+  static assetTooLarge(message: string, data?: unknown) {
+    return new RpcError(RpcErrorCode.ASSET_TOO_LARGE, message, data);
+  }
+  static invalidAsset(message: string, data?: unknown) {
+    return new RpcError(RpcErrorCode.INVALID_ASSET, message, data);
+  }
 }

@@ -22,6 +22,7 @@
 import { Command } from "commander";
 import { randomUUID } from "node:crypto";
 import { readFile, writeFile } from "node:fs/promises";
+import { extname } from "node:path";
 import { WebSocket } from "ws";
 import {
   JSONRPC_VERSION,
@@ -88,7 +89,20 @@ async function rpc<T = unknown>(
   // Hello
   const helloId = nextId++;
   const hello = await new Promise<unknown>((resolve, reject) => {
-    pending.set(helloId, { resolve, reject });
+    const timer = setTimeout(() => {
+      pending.delete(helloId);
+      reject(new Error("hello timeout"));
+    }, timeoutMs);
+    pending.set(helloId, {
+      resolve: (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      reject: (error) => {
+        clearTimeout(timer);
+        reject(error);
+      },
+    });
     ws.send(
       JSON.stringify({
         jsonrpc: JSONRPC_VERSION,
@@ -97,14 +111,27 @@ async function rpc<T = unknown>(
         params: { role: "agent", clientId },
       } satisfies JsonRpcRequest),
     );
-    setTimeout(() => reject(new Error("hello timeout")), timeoutMs);
   });
   void hello;
 
   try {
     const id = nextId++ as RpcId;
     const result = await new Promise<T>((resolve, reject) => {
-      pending.set(id as number, { resolve: resolve as (v: unknown) => void, reject });
+      const key = id as number;
+      const timer = setTimeout(() => {
+        pending.delete(key);
+        reject(new Error(`RPC timeout: ${method}`));
+      }, timeoutMs);
+      pending.set(key, {
+        resolve: (value) => {
+          clearTimeout(timer);
+          resolve(value as T);
+        },
+        reject: (error) => {
+          clearTimeout(timer);
+          reject(error);
+        },
+      });
       ws.send(
         JSON.stringify({
           jsonrpc: JSONRPC_VERSION,
@@ -113,7 +140,6 @@ async function rpc<T = unknown>(
           params,
         } satisfies JsonRpcRequest),
       );
-      setTimeout(() => reject(new Error(`RPC timeout: ${method}`)), timeoutMs);
     });
     return result;
   } finally {
@@ -145,6 +171,36 @@ function parsePoint2(s: string): { x: number; y: number } {
   return { x, y };
 }
 
+async function activeLayerId(opts: CliOpts): Promise<string | null> {
+  return (await rpc<{ activeLayerId: string | null }>(opts, "canvas.getInfo")).activeLayerId;
+}
+
+async function readJson(file: string): Promise<unknown> {
+  try {
+    return JSON.parse(await readFile(file, "utf8")) as unknown;
+  } catch (error) {
+    throw new Error(`Could not read JSON from ${file}: ${(error as Error).message}`);
+  }
+}
+
+function inferAssetMimeType(file: string, data: Buffer): "image/png" | "image/jpeg" {
+  const extension = extname(file).toLowerCase();
+  const isPng = data.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
+  const isJpeg = data[0] === 0xff && data[1] === 0xd8 && data[2] === 0xff;
+  if (extension === ".png" && isPng) return "image/png";
+  if ((extension === ".jpg" || extension === ".jpeg") && isJpeg) return "image/jpeg";
+  if (isPng) return "image/png";
+  if (isJpeg) return "image/jpeg";
+  throw new Error(`Unsupported asset ${file}: expected a PNG or JPEG file`);
+}
+
+function httpBaseUrl(opts: CliOpts): string {
+  return (opts.url ?? process.env.PAINT_WS_URL ?? "ws://127.0.0.1:8080")
+    .replace(/^wss:/, "https:")
+    .replace(/^ws:/, "http:")
+    .replace(/\/$/, "");
+}
+
 function getOpts(): CliOpts {
   return program.opts();
 }
@@ -166,6 +222,43 @@ program.command("info").action(async () => {
   const info = await rpc(opts, "canvas.getInfo");
   output(opts, info);
 });
+
+program
+  .command("analyze")
+  .description("Measure coverage, bounds, luminance and dominant colors")
+  .option("--layer <lid>", "Analyze one layer instead of the composite")
+  .option("--stride <n>", "Sample every Nth pixel", "1")
+  .option("--alpha-threshold <n>", "Minimum alpha counted as painted", "1")
+  .option("--bins <n>", "Luminance histogram bins", "16")
+  .option("--colors <n>", "Dominant color count", "5")
+  .option("--background", "Composite the canvas background", false)
+  .action(async (cmdOpts) => {
+    const opts = getOpts();
+    const result = await rpc(opts, "canvas.analyze", {
+      ...(cmdOpts.layer ? { layerId: cmdOpts.layer } : {}),
+      stride: parseInt(cmdOpts.stride, 10),
+      alphaThreshold: parseInt(cmdOpts.alphaThreshold, 10),
+      histogramBins: parseInt(cmdOpts.bins, 10),
+      dominantColors: parseInt(cmdOpts.colors, 10),
+      includeBackground: Boolean(cmdOpts.background),
+    });
+    output(opts, result);
+  });
+
+program
+  .command("sample")
+  .description("Read exact RGBA values at canvas coordinates")
+  .requiredOption("--points <list>", 'Points "x,y[;x,y...]"')
+  .option("--layer <lid>", "Sample one layer instead of the composite")
+  .action(async (cmdOpts) => {
+    const opts = getOpts();
+    const points = parsePoints(cmdOpts.points).map(({ x, y }) => ({ x: Math.trunc(x), y: Math.trunc(y) }));
+    const result = await rpc(opts, "canvas.sample", {
+      ...(cmdOpts.layer ? { layerId: cmdOpts.layer } : {}),
+      points,
+    });
+    output(opts, result);
+  });
 
 program
   .command("stroke")
@@ -250,6 +343,78 @@ program
       r: parseFloat(cmdOpts.r),
       stroke: cmdOpts.stroke ? parseColor(cmdOpts.stroke) : undefined,
       fill: cmdOpts.fill ? parseColor(cmdOpts.fill) : undefined,
+    });
+    output(opts, result);
+  });
+
+program
+  .command("path")
+  .description("Draw a native path from a JSON file")
+  .argument("<file>", "JSON array of commands, or a draw.path params object")
+  .option("--layer <lid>", "Layer ID (default: active)")
+  .option("--stroke <c>", "Stroke color")
+  .option("--fill <c>", "Fill color")
+  .option("--stroke-width <n>", "Stroke width")
+  .option("--opacity <n>", "Opacity 0..1")
+  .action(async (file, cmdOpts) => {
+    const opts = getOpts();
+    const value = await readJson(file);
+    const fromFile = Array.isArray(value) ? { commands: value } : (value as Record<string, unknown>);
+    if (!fromFile || typeof fromFile !== "object") throw new Error("Path JSON must be an array or object");
+    const result = await rpc(opts, "draw.path", {
+      ...fromFile,
+      layerId: cmdOpts.layer ?? fromFile.layerId ?? (await activeLayerId(opts)),
+      ...(cmdOpts.stroke ? { stroke: parseColor(cmdOpts.stroke) } : {}),
+      ...(cmdOpts.fill ? { fill: parseColor(cmdOpts.fill) } : {}),
+      ...(cmdOpts.strokeWidth ? { strokeWidth: parseFloat(cmdOpts.strokeWidth) } : {}),
+      ...(cmdOpts.opacity ? { opacity: parseFloat(cmdOpts.opacity) } : {}),
+    });
+    output(opts, result);
+  });
+
+program
+  .command("gradient")
+  .description("Draw a native gradient from a JSON params file")
+  .argument("<file>", "JSON object with gradient, shape and stops")
+  .option("--layer <lid>", "Layer ID (default: active)")
+  .action(async (file, cmdOpts) => {
+    const opts = getOpts();
+    const value = await readJson(file);
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      throw new Error("Gradient JSON must be an object");
+    }
+    const fromFile = value as Record<string, unknown>;
+    const result = await rpc(opts, "draw.gradient", {
+      ...fromFile,
+      layerId: cmdOpts.layer ?? fromFile.layerId ?? (await activeLayerId(opts)),
+    });
+    output(opts, result);
+  });
+
+program
+  .command("image")
+  .description("Place an immutable raster asset on a layer")
+  .requiredOption("--asset <id>", "Asset ID returned by asset add")
+  .requiredOption("--x <n>", "X")
+  .requiredOption("--y <n>", "Y")
+  .option("--layer <lid>", "Layer ID (default: active)")
+  .option("--width <n>", "Rendered width")
+  .option("--height <n>", "Rendered height")
+  .option("--opacity <n>", "Opacity 0..1", "1")
+  .option("--rotate <degrees>", "Clockwise rotation in degrees", "0")
+  .option("--no-smoothing", "Disable image smoothing")
+  .action(async (cmdOpts) => {
+    const opts = getOpts();
+    const result = await rpc(opts, "draw.image", {
+      layerId: cmdOpts.layer ?? (await activeLayerId(opts)),
+      assetId: cmdOpts.asset,
+      x: parseFloat(cmdOpts.x),
+      y: parseFloat(cmdOpts.y),
+      ...(cmdOpts.width ? { width: parseFloat(cmdOpts.width) } : {}),
+      ...(cmdOpts.height ? { height: parseFloat(cmdOpts.height) } : {}),
+      opacity: parseFloat(cmdOpts.opacity),
+      rotate: parseFloat(cmdOpts.rotate),
+      smoothing: cmdOpts.smoothing,
     });
     output(opts, result);
   });
@@ -351,11 +516,80 @@ layer
     const result = await rpc(opts, "layer.merge", { fromId: cmdOpts.from, intoId: cmdOpts.into });
     output(opts, result);
   });
+layer
+  .command("transform")
+  .description("Bake an affine transform into a layer")
+  .requiredOption("--id <lid>", "Layer ID")
+  .option("--translate-x <n>", "Horizontal translation", "0")
+  .option("--translate-y <n>", "Vertical translation", "0")
+  .option("--scale-x <n>", "Horizontal scale", "1")
+  .option("--scale-y <n>", "Vertical scale", "1")
+  .option("--rotate <degrees>", "Clockwise rotation", "0")
+  .option("--pivot-x <n>", "Transform pivot X")
+  .option("--pivot-y <n>", "Transform pivot Y")
+  .option("--no-smoothing", "Disable image smoothing")
+  .action(async (cmdOpts) => {
+    const opts = getOpts();
+    const result = await rpc(opts, "layer.transform", {
+      layerId: cmdOpts.id,
+      translateX: parseFloat(cmdOpts.translateX),
+      translateY: parseFloat(cmdOpts.translateY),
+      scaleX: parseFloat(cmdOpts.scaleX),
+      scaleY: parseFloat(cmdOpts.scaleY),
+      rotate: parseFloat(cmdOpts.rotate),
+      ...(cmdOpts.pivotX ? { pivotX: parseFloat(cmdOpts.pivotX) } : {}),
+      ...(cmdOpts.pivotY ? { pivotY: parseFloat(cmdOpts.pivotY) } : {}),
+      smoothing: cmdOpts.smoothing,
+    });
+    output(opts, result);
+  });
 layer.command("flatten").action(async () => {
   const opts = getOpts();
   const result = await rpc(opts, "layer.flatten");
   output(opts, result);
 });
+
+const asset = program.command("asset").description("Immutable PNG/JPEG asset library");
+
+asset
+  .command("add")
+  .argument("<file>", "PNG or JPEG file")
+  .option("--name <name>", "Human-readable asset name")
+  .action(async (file, cmdOpts) => {
+    const opts = getOpts();
+    const data = await readFile(file);
+    const result = await rpc(opts, "asset.put", {
+      data: data.toString("base64"),
+      mimeType: inferAssetMimeType(file, data),
+      ...(cmdOpts.name ? { name: cmdOpts.name } : {}),
+    });
+    output(opts, result);
+  });
+
+asset
+  .command("list")
+  .option("--limit <n>", "Maximum assets", "100")
+  .action(async (cmdOpts) => {
+    const opts = getOpts();
+    output(opts, await rpc(opts, "asset.list", { limit: parseInt(cmdOpts.limit, 10) }));
+  });
+
+asset
+  .command("get")
+  .requiredOption("--id <id>", "Asset ID")
+  .option("--out <path>", "Download the immutable asset")
+  .action(async (cmdOpts) => {
+    const opts = getOpts();
+    const metadata = await rpc<{ url: string; size: number }>(opts, "asset.get", {
+      assetId: cmdOpts.id,
+    });
+    if (!cmdOpts.out) return output(opts, metadata);
+    const response = await fetch(httpBaseUrl(opts) + metadata.url);
+    if (!response.ok) throw new Error(`Asset download failed: HTTP ${response.status}`);
+    const data = await response.arrayBuffer();
+    await writeFile(cmdOpts.out, Buffer.from(data));
+    output(opts, { saved: cmdOpts.out, size: data.byteLength });
+  });
 
 const history = program.command("history").description("History operations");
 history
@@ -466,6 +700,132 @@ program
     process.on("SIGINT", () => process.exit(0));
     // Keep the node process alive indefinitely
     setInterval(() => {}, 1 << 30);
+  });
+
+program
+  .command("transaction")
+  .description("Execute a JSONL edit file atomically as one canonical document commit")
+  .argument("<file>", "JSONL file of mutation operations")
+  .requiredOption("--idempotency-key <key>", "Stable retry key")
+  .option("--message <text>", "Commit message", "Atomic edit")
+  .action(async (file, cmdOpts) => {
+    const opts = getOpts();
+    const input = await readFile(file, "utf8");
+    const operations: { method: string; params?: unknown }[] = [];
+    for (const [index, raw] of input.split("\n").entries()) {
+      const line = raw.trim();
+      if (!line || line.startsWith("#")) continue;
+      try {
+        operations.push(JSON.parse(line) as { method: string; params?: unknown });
+      } catch (error) {
+        throw new Error(`Invalid JSON on line ${index + 1}: ${(error as Error).message}`);
+      }
+    }
+    const result = await rpc(opts, "transaction.execute", {
+      idempotencyKey: cmdOpts.idempotencyKey,
+      message: cmdOpts.message,
+      operations,
+    });
+    output(opts, result);
+  });
+
+const doc = program.command("doc").description("Canonical document and version operations");
+
+doc
+  .command("get")
+  .option("--commit <id>", "Read a specific commit")
+  .action(async (cmdOpts) => {
+    const opts = getOpts();
+    output(opts, await rpc(opts, "doc.get", cmdOpts.commit ? { commitId: cmdOpts.commit } : {}));
+  });
+
+doc
+  .command("history")
+  .option("--limit <n>", "Maximum commits", "100")
+  .action(async (cmdOpts) => {
+    const opts = getOpts();
+    output(opts, await rpc(opts, "doc.history", { limit: parseInt(cmdOpts.limit, 10) }));
+  });
+
+doc
+  .command("undo")
+  .option("--steps <n>", "Document commits", "1")
+  .action(async (cmdOpts) => {
+    const opts = getOpts();
+    output(opts, await rpc(opts, "doc.undo", { steps: parseInt(cmdOpts.steps, 10) }));
+  });
+
+doc
+  .command("redo")
+  .option("--steps <n>", "Document commits", "1")
+  .action(async (cmdOpts) => {
+    const opts = getOpts();
+    output(opts, await rpc(opts, "doc.redo", { steps: parseInt(cmdOpts.steps, 10) }));
+  });
+
+doc
+  .command("branch")
+  .argument("<action>", "list | create | switch")
+  .option("--name <name>", "Branch name")
+  .action(async (action, cmdOpts) => {
+    const opts = getOpts();
+    if (action === "list") return output(opts, await rpc(opts, "doc.branch.list"));
+    if (!cmdOpts.name) throw new Error(`doc branch ${action} requires --name`);
+    if (action === "create") {
+      return output(opts, await rpc(opts, "doc.branch.create", { name: cmdOpts.name }));
+    }
+    if (action === "switch") {
+      return output(opts, await rpc(opts, "doc.branch.switch", { name: cmdOpts.name }));
+    }
+    throw new Error(`Unknown doc branch action: ${action}`);
+  });
+
+doc
+  .command("checkpoint")
+  .argument("<action>", "list | create | restore")
+  .option("--name <name>", "Checkpoint name")
+  .option("--message <text>", "Checkpoint note")
+  .action(async (action, cmdOpts) => {
+    const opts = getOpts();
+    if (action === "list") return output(opts, await rpc(opts, "doc.checkpoint.list"));
+    if (!cmdOpts.name) throw new Error(`doc checkpoint ${action} requires --name`);
+    if (action === "create") {
+      return output(
+        opts,
+        await rpc(opts, "doc.checkpoint.create", {
+          name: cmdOpts.name,
+          ...(cmdOpts.message ? { message: cmdOpts.message } : {}),
+        }),
+      );
+    }
+    if (action === "restore") {
+      return output(opts, await rpc(opts, "doc.checkpoint.restore", { name: cmdOpts.name }));
+    }
+    throw new Error(`Unknown doc checkpoint action: ${action}`);
+  });
+
+doc
+  .command("render")
+  .description("Render the canonical document headlessly as deterministic SVG")
+  .option("--commit <id>", "Render a specific commit")
+  .option("--out <path>", "Download SVG to a file")
+  .action(async (cmdOpts) => {
+    const opts = getOpts();
+    const result = await rpc<{ url: string; size: number; digest: string; warnings: string[] }>(
+      opts,
+      "doc.render",
+      { format: "svg", ...(cmdOpts.commit ? { commitId: cmdOpts.commit } : {}) },
+    );
+    if (!cmdOpts.out) return output(opts, result);
+    const baseUrl = (opts.url ?? "").replace(/^ws/, "http");
+    const data = await fetch(baseUrl + result.url).then((response) => response.arrayBuffer());
+    await writeFile(cmdOpts.out, Buffer.from(data));
+    output(opts, {
+      saved: cmdOpts.out,
+      size: data.byteLength,
+      digest: result.digest,
+      warnings: result.warnings,
+    });
   });
 
 // ---------------------------------------------------------------------------

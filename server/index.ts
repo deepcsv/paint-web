@@ -7,8 +7,17 @@ import { ServerState } from "./state.js";
 import { EventBus } from "./event-bus.js";
 import { PrimaryClient } from "./primary-client.js";
 import { OpLog } from "./op-log.js";
-import { ensureDataDir, loadState, saveSnapshotPng } from "./persistence.js";
+import {
+  ensureDataDir,
+  flushPersistence,
+  loadDocument,
+  loadState,
+  saveSnapshotPng,
+  scheduleDocumentWrite,
+} from "./persistence.js";
 import { registerHandlers } from "./handlers/index.js";
+import { DocumentStore } from "./document-store.js";
+import { AssetStore } from "./asset-store.js";
 
 const HOST = process.env.PAINT_HOST ?? "127.0.0.1";
 const PORT = parseInt(process.env.PAINT_PORT ?? "8080", 10);
@@ -16,12 +25,31 @@ const TOKEN = process.env.PAINT_TOKEN;
 
 async function main() {
   await ensureDataDir();
+  const assetStore = new AssetStore();
+  await assetStore.init();
 
   const state = new ServerState();
   const saved = await loadState();
   if (saved) {
     state.fromJSON(saved);
     console.log("[state] loaded metadata:", state.width, "x", state.height, ", layers:", state.layers.length);
+  }
+  const persistedDocument = await loadDocument();
+  const documentStore = new DocumentStore(
+    state.snapshot(),
+    scheduleDocumentWrite,
+    persistedDocument,
+  );
+  if (persistedDocument) {
+    state.restore(documentStore.currentState());
+    console.log(
+      "[document] recovered",
+      documentStore.documentId,
+      "revision",
+      documentStore.revision,
+      "branch",
+      documentStore.currentBranch,
+    );
   }
 
   // Vite dev server in dev mode; undefined in prod (serves dist/ directly)
@@ -35,7 +63,7 @@ async function main() {
     });
   }
 
-  const httpServer = createHttpServer(vite);
+  const httpServer = createHttpServer(vite, assetStore);
   const wss = new WebSocketServer({ server: httpServer });
   const events = new EventBus(wss);
   const primary = new PrimaryClient();
@@ -65,11 +93,13 @@ async function main() {
     events,
     primary,
     opLog,
+    documentStore,
+    assetStore,
     registerTempSnapshot,
     saveSnapshotPng,
   });
 
-  attachWsServer({ wss, router, state, events, primary, opLog, token: TOKEN });
+  attachWsServer({ wss, router, state, events, primary, opLog, documentStore, token: TOKEN });
 
   // Handle in-use port cleanly instead of throwing an uncaught EADDRINUSE.
   httpServer.on("error", (err: NodeJS.ErrnoException) => {
@@ -95,7 +125,7 @@ async function main() {
   });
 
   // Graceful shutdown
-  const shutdown = (sig: string) => {
+  const shutdown = async (sig: string) => {
     console.log(`\n[shutdown] ${sig} received, closing...`);
     for (const client of wss.clients) {
       try {
@@ -104,11 +134,12 @@ async function main() {
         // ignore
       }
     }
+    await flushPersistence();
     httpServer.close(() => process.exit(0));
     setTimeout(() => process.exit(1), 3000).unref();
   };
-  process.on("SIGINT", () => shutdown("SIGINT"));
-  process.on("SIGTERM", () => shutdown("SIGTERM"));
+  process.on("SIGINT", () => void shutdown("SIGINT"));
+  process.on("SIGTERM", () => void shutdown("SIGTERM"));
 }
 
 main().catch((err) => {
