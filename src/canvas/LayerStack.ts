@@ -204,11 +204,47 @@ export class LayerStack {
     void oldH;
   }
 
+  transformLayer(params: {
+    layerId: LayerId;
+    translateX: number;
+    translateY: number;
+    scaleX: number;
+    scaleY: number;
+    rotate: number;
+    pivotX?: number;
+    pivotY?: number;
+    smoothing: boolean;
+  }): boolean {
+    const layer = this.layers.get(params.layerId);
+    if (!layer) return false;
+    const source = makeCanvas(this.width, this.height);
+    source.ctx.drawImage(layer.canvas as CanvasImageSource, 0, 0);
+    const pivotX = params.pivotX ?? this.width / 2;
+    const pivotY = params.pivotY ?? this.height / 2;
+    const radians = (params.rotate * Math.PI) / 180;
+    layer.ctx.clearRect(0, 0, this.width, this.height);
+    layer.ctx.save();
+    layer.ctx.imageSmoothingEnabled = params.smoothing;
+    layer.ctx.translate(pivotX + params.translateX, pivotY + params.translateY);
+    layer.ctx.rotate(radians);
+    layer.ctx.scale(params.scaleX, params.scaleY);
+    layer.ctx.translate(-pivotX, -pivotY);
+    layer.ctx.drawImage(source.canvas as CanvasImageSource, 0, 0);
+    layer.ctx.restore();
+    layer.dirty = true;
+    return true;
+  }
+
   /** Composite all visible layers onto the given destination context. */
-  composite(dest: CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D): void {
+  composite(
+    dest: CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D,
+    includeBackground = true,
+  ): void {
     dest.clearRect(0, 0, this.width, this.height);
-    dest.fillStyle = "rgba(255,255,255,1)";
-    dest.fillRect(0, 0, this.width, this.height);
+    if (includeBackground) {
+      dest.fillStyle = "rgba(255,255,255,1)";
+      dest.fillRect(0, 0, this.width, this.height);
+    }
     for (let i = 0; i < this.order.length; i++) {
       const id = this.order[i]!;
       const l = this.layers.get(id);
@@ -219,6 +255,12 @@ export class LayerStack {
       dest.drawImage(l.canvas as CanvasImageSource, 0, 0);
       dest.restore();
     }
+  }
+
+  getCompositeImageData(includeBackground = false): ImageData {
+    const { ctx } = makeCanvas(this.width, this.height);
+    this.composite(ctx, includeBackground);
+    return ctx.getImageData(0, 0, this.width, this.height);
   }
 
   /** Composite only one layer onto dest (for region/export operations). */

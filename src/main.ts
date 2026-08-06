@@ -453,6 +453,8 @@ internalHandlers.set("canvas.export", async (p) => {
 });
 internalHandlers.set("canvas.getRegion", (p) => controller.getRegion(p as never));
 internalHandlers.set("canvas.import", (p) => controller.import(p as never));
+internalHandlers.set("canvas.analyze", (p) => controller.analyze(p as never));
+internalHandlers.set("canvas.sample", (p) => controller.sample(p as never));
 internalHandlers.set("layer.create", (p) => {
   const r = controller.createLayer(p as never);
   refreshLayerPanel();
@@ -486,6 +488,7 @@ internalHandlers.set("layer.flatten", (p) => {
   refreshLayerPanel();
   return result;
 });
+internalHandlers.set("layer.transform", (p) => controller.transformLayer(p as never));
 internalHandlers.set("draw.stroke", wrapHandler("draw.stroke", (p: never) => controller.stroke(p)));
 internalHandlers.set("draw.line", wrapHandler("draw.line", (p: never) => controller.line(p)));
 internalHandlers.set("draw.rect", wrapHandler("draw.rect", (p: never) => controller.rect(p)));
@@ -494,6 +497,9 @@ internalHandlers.set("draw.ellipse", wrapHandler("draw.ellipse", (p: never) => c
 internalHandlers.set("draw.fill", wrapHandler("draw.fill", (p: never) => controller.fillBucket(p)));
 internalHandlers.set("draw.text", wrapHandler("draw.text", (p: never) => controller.text(p)));
 internalHandlers.set("draw.setPixel", (p) => controller.setPixel(p as never));
+internalHandlers.set("draw.path", (p) => controller.path(p as never));
+internalHandlers.set("draw.gradient", (p) => controller.gradient(p as never));
+internalHandlers.set("draw.image", (p) => controller.image(p as never));
 internalHandlers.set("history.undo", (p) => controller.undo(p as never));
 internalHandlers.set("history.redo", (p) => controller.redo(p as never));
 internalHandlers.set("history.goto", (p) => controller.goto(p as never));

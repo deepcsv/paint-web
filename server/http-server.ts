@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { existsSync } from "node:fs";
 import type { ViteDevServer } from "vite";
 import { randomSnapshotId } from "./sanitize.js";
+import type { AssetStore } from "./asset-store.js";
 
 // In dev, this file is at server/http-server.ts → ../dist = project-root/dist.
 // In prod (after tsc), this file is at dist-server/server/http-server.js →
@@ -64,7 +65,7 @@ export function registerTempJson(json: string, ttlMs = 30_000): string {
  * Create the HTTP server. In dev, Vite middleware handles /assets/* and HMR.
  * In prod, we serve files from dist/.
  */
-export function createHttpServer(devServer?: ViteDevServer): Server {
+export function createHttpServer(devServer?: ViteDevServer, assetStore?: AssetStore): Server {
   const server = createServer(async (req: IncomingMessage, res: ServerResponse) => {
     const url = req.url ?? "/";
 
@@ -90,6 +91,27 @@ export function createHttpServer(devServer?: ViteDevServer): Server {
         "cache-control": "no-store",
       });
       res.end(entry.buffer);
+      return;
+    }
+
+    // Immutable content-addressed P1 assets. This route must run before Vite's
+    // own /assets/* handling and intentionally uses the singular /asset/ path.
+    if (url.startsWith("/asset/") && assetStore) {
+      try {
+        const assetId = decodeURIComponent(url.slice("/asset/".length).split("?")[0]!);
+        const { metadata, buffer } = await assetStore.read(assetId);
+        res.writeHead(200, {
+          "content-type": metadata.mimeType,
+          "content-length": buffer.byteLength,
+          "cache-control": "public, max-age=31536000, immutable",
+          etag: `"${metadata.sha256}"`,
+          "x-content-type-options": "nosniff",
+        });
+        res.end(buffer);
+      } catch {
+        res.writeHead(404, { "content-type": "text/plain; charset=utf-8" });
+        res.end("asset not found");
+      }
       return;
     }
 

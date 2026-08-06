@@ -10,7 +10,6 @@ const DOCUMENT_MUTATION_METHODS = new Set([
   "canvas.import",
   "snapshot.load",
 ]);
-const RASTER_KEYFRAME_METHODS = new Set(["canvas.import", "snapshot.load"]);
 
 /** Mutations that become canonical document commits. */
 export function isDocumentMutationMethod(method: string): boolean {
@@ -22,8 +21,10 @@ export function isDocumentMutationMethod(method: string): boolean {
 }
 
 /** Operations whose durable source is raster content rather than stable params. */
-export function needsRasterKeyframe(method: string): boolean {
-  return RASTER_KEYFRAME_METHODS.has(method);
+export function needsRasterKeyframe(method: string, params?: unknown): boolean {
+  if (method === "snapshot.load") return true;
+  if (method !== "canvas.import") return false;
+  return !(params as { assetId?: string } | undefined)?.assetId;
 }
 
 /** Validate every transaction operation before any renderer mutation occurs. */

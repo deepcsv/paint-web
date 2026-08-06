@@ -69,4 +69,80 @@ describe("headless SVG renderer", () => {
 
     expect(rendered.warnings).toContain("draw.fill flood-fill is not represented in SVG preview");
   });
+
+  it("renders P1 paths, gradients, immutable images and affine transforms", () => {
+    const state = new ServerState();
+    const store = new DocumentStore(state.snapshot());
+    const layerId = state.activeLayerId;
+    const assetId = `A_${"a".repeat(64)}`;
+    store.captureBaseline([{ id: layerId, png: "" }]);
+    store.recordOperation(
+      "draw.path",
+      {
+        layerId,
+        commands: [
+          { op: "M", x: 10, y: 10 },
+          { op: "C", c1x: 20, c1y: 0, c2x: 30, c2y: 20, x: 40, y: 10 },
+          { op: "Z" },
+        ],
+        fill: "#ff00aa",
+        strokeWidth: 1,
+        opacity: 1,
+        fillRule: "nonzero",
+        lineCap: "round",
+        lineJoin: "round",
+      },
+      null,
+      state.snapshot(),
+      "agent",
+    );
+    store.recordOperation(
+      "draw.gradient",
+      {
+        layerId,
+        gradient: { type: "linear", from: { x: 0, y: 0 }, to: { x: 100, y: 0 } },
+        shape: { type: "rect", x: 0, y: 20, w: 100, h: 40 },
+        stops: [
+          { offset: 0, color: "#000000" },
+          { offset: 1, color: "#ffffff" },
+        ],
+        opacity: 1,
+      },
+      null,
+      state.snapshot(),
+      "agent",
+    );
+    store.recordOperation(
+      "draw.image",
+      { layerId, assetId, x: 4, y: 5, width: 12, height: 8, opacity: 1, rotate: 15 },
+      null,
+      state.snapshot(),
+      "agent",
+    );
+    store.recordOperation(
+      "layer.transform",
+      {
+        layerId,
+        translateX: 5,
+        translateY: 7,
+        scaleX: 1,
+        scaleY: 1,
+        rotate: 0,
+        smoothing: true,
+      },
+      null,
+      state.snapshot(),
+      "agent",
+    );
+
+    const rendered = renderDocumentToSvg(store.getReplaySnapshot(), {
+      assets: new Map([[assetId, { dataUrl: "data:image/png;base64,AAAA", width: 1, height: 1 }]]),
+    });
+
+    expect(rendered.svg).toContain('<path d="M 10 10 C 20 0 30 20 40 10 Z"');
+    expect(rendered.svg).toContain("<linearGradient");
+    expect(rendered.svg).toContain("data:image/png;base64,AAAA");
+    expect(rendered.svg).toContain('transform="matrix(1 0 0 1 5 7)"');
+    expect(rendered.warnings).toEqual([]);
+  });
 });

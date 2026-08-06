@@ -5,6 +5,7 @@ data/document.json.tmp
 data/state.json.bak
 data/state.json.tmp
 data/tmp/
+data/assets/
 
 # Build output and local dependencies
 dist/

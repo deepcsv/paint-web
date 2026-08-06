@@ -14,8 +14,13 @@ import type { saveSnapshotPng as SaveSnapshotPng } from "../persistence.js";
 import { RpcError } from "../rpc/errors.js";
 import { loadSnapshotPng } from "../persistence.js";
 import {
+  AssetGetParams,
+  AssetListParams,
+  AssetPutParams,
   CanvasExportParams,
+  CanvasAnalyzeParams,
   CanvasGetRegionParams,
+  CanvasSampleParams,
   JSONRPC_VERSION,
   SnapshotLoadParams,
   SnapshotSaveParams,
@@ -32,7 +37,13 @@ import {
   validateDrawBatchOperations,
   validateTransactionOperations,
 } from "../document-operations.js";
-import { renderDocumentToSvg } from "../headless-renderer.js";
+import { collectDocumentAssetIds, renderDocumentToSvg } from "../headless-renderer.js";
+import {
+  AssetNotFoundError,
+  AssetStore,
+  AssetTooLargeError,
+  InvalidAssetError,
+} from "../asset-store.js";
 
 export interface HandlerDeps {
   router: Router;
@@ -41,6 +52,7 @@ export interface HandlerDeps {
   primary: PrimaryClient;
   opLog: import("../op-log.js").OpLog;
   documentStore: DocumentStore;
+  assetStore: AssetStore;
   registerTempSnapshot: typeof RegisterTempSnapshot;
   saveSnapshotPng: typeof SaveSnapshotPng;
 }
@@ -53,6 +65,7 @@ export function registerHandlers(deps: HandlerDeps): void {
     primary,
     opLog,
     documentStore,
+    assetStore,
     registerTempSnapshot,
     saveSnapshotPng,
   } = deps;
@@ -147,6 +160,21 @@ export function registerHandlers(deps: HandlerDeps): void {
     throw error;
   }
 
+  function rethrowAssetError(error: unknown): never {
+    if (error instanceof AssetNotFoundError) throw RpcError.assetNotFound(error.assetId);
+    if (error instanceof AssetTooLargeError) throw RpcError.assetTooLarge(error.message);
+    if (error instanceof InvalidAssetError) throw RpcError.invalidAsset(error.message);
+    throw error;
+  }
+
+  function assertAsset(assetId: string): void {
+    try {
+      assetStore.get(assetId);
+    } catch (error) {
+      rethrowAssetError(error);
+    }
+  }
+
   // -------------------------------------------------------------------------
   // canvas.* — pixel work goes to primary; metadata stays on server
   // -------------------------------------------------------------------------
@@ -199,7 +227,12 @@ export function registerHandlers(deps: HandlerDeps): void {
 
   router.register("canvas.import", (params) => {
     assertLayerTarget(params);
-    return primary.exec("canvas.import", params);
+    const parsed = params as { url?: string; assetId?: string; layerId?: string };
+    if (parsed.assetId) assertAsset(parsed.assetId);
+    return primary.exec("canvas.import", {
+      ...parsed,
+      ...(parsed.assetId ? { url: assetStore.url(parsed.assetId) } : {}),
+    });
   });
 
   router.register("canvas.getRegion", async (params) => {
@@ -212,6 +245,23 @@ export function registerHandlers(deps: HandlerDeps): void {
       return { url, expiresAt: Date.now() + 30_000 };
     }
     return result;
+  });
+
+  router.register("canvas.analyze", (params) => {
+    const parsed = CanvasAnalyzeParams.parse(params ?? {});
+    assertLayerTarget(parsed);
+    return primary.exec("canvas.analyze", parsed);
+  });
+
+  router.register("canvas.sample", (params) => {
+    const parsed = CanvasSampleParams.parse(params);
+    assertLayerTarget(parsed);
+    for (const point of parsed.points) {
+      if (point.x >= state.width || point.y >= state.height) {
+        throw RpcError.outOfBounds(point.x, point.y);
+      }
+    }
+    return primary.exec("canvas.sample", parsed);
   });
 
   // -------------------------------------------------------------------------
@@ -327,6 +377,11 @@ export function registerHandlers(deps: HandlerDeps): void {
     return { id: layer.id, name: layer.name };
   });
 
+  router.register("layer.transform", (params) => {
+    assertLayerTarget(params, true);
+    return primary.exec("layer.transform", params);
+  });
+
   // -------------------------------------------------------------------------
   // draw.* — all pixel-level, all proxied to primary
   // -------------------------------------------------------------------------
@@ -340,10 +395,16 @@ export function registerHandlers(deps: HandlerDeps): void {
     "draw.fill",
     "draw.text",
     "draw.setPixel",
+    "draw.path",
+    "draw.gradient",
+    "draw.image",
   ];
   for (const m of drawMethods) {
     router.register(m, (params) => {
       assertLayerTarget(params, true);
+      if (m === "draw.image") {
+        assertAsset((params as { assetId: string }).assetId);
+      }
       return primary.exec(m, params);
     });
   }
@@ -355,6 +416,9 @@ export function registerHandlers(deps: HandlerDeps): void {
     for (const op of operations) {
       try {
         assertLayerTarget(op.params, op.method.startsWith("draw."));
+        if (op.method === "draw.image") {
+          assertAsset((op.params as { assetId: string }).assetId);
+        }
         await primary.exec(op.method, op.params);
         results.push({ ok: true });
       } catch (err) {
@@ -430,6 +494,32 @@ export function registerHandlers(deps: HandlerDeps): void {
   });
 
   // -------------------------------------------------------------------------
+  // asset.* — immutable, content-addressed P1 raster library
+  // -------------------------------------------------------------------------
+
+  router.register("asset.put", async (params) => {
+    try {
+      return await assetStore.put(AssetPutParams.parse(params));
+    } catch (error) {
+      rethrowAssetError(error);
+    }
+  });
+
+  router.register("asset.get", (params) => {
+    const { assetId } = AssetGetParams.parse(params);
+    try {
+      return assetStore.get(assetId);
+    } catch (error) {
+      rethrowAssetError(error);
+    }
+  });
+
+  router.register("asset.list", (params) => {
+    const { limit } = AssetListParams.parse(params ?? {}) ?? { limit: 100 };
+    return { assets: assetStore.list(limit) };
+  });
+
+  // -------------------------------------------------------------------------
   // transaction.* — serialized, idempotent, pixel + metadata rollback
   // -------------------------------------------------------------------------
 
@@ -498,7 +588,9 @@ export function registerHandlers(deps: HandlerDeps): void {
     }
 
     try {
-      const raster = operations.some((operation) => needsRasterKeyframe(operation.method))
+      const raster = operations.some((operation) =>
+        needsRasterKeyframe(operation.method, operation.params),
+      )
         ? await captureRasterLayers()
         : undefined;
       return documentStore.recordTransaction({
@@ -600,10 +692,20 @@ export function registerHandlers(deps: HandlerDeps): void {
     }
   });
 
-  router.register("doc.render", (params) => {
+  router.register("doc.render", async (params) => {
     const commitId = (params as { commitId?: string } | undefined)?.commitId;
     try {
-      const rendered = renderDocumentToSvg(documentStore.getReplaySnapshot(commitId));
+      const snapshot = documentStore.getReplaySnapshot(commitId);
+      const assets = new Map<string, { dataUrl: string; width: number; height: number }>();
+      for (const assetId of collectDocumentAssetIds(snapshot)) {
+        const metadata = assetStore.get(assetId);
+        assets.set(assetId, {
+          dataUrl: await assetStore.dataUrl(assetId),
+          width: metadata.width,
+          height: metadata.height,
+        });
+      }
+      const rendered = renderDocumentToSvg(snapshot, { assets });
       const buffer = Buffer.from(rendered.svg, "utf8");
       const ttlMs = 5 * 60_000;
       return {
@@ -615,6 +717,13 @@ export function registerHandlers(deps: HandlerDeps): void {
         warnings: rendered.warnings,
       };
     } catch (error) {
+      if (
+        error instanceof AssetNotFoundError ||
+        error instanceof AssetTooLargeError ||
+        error instanceof InvalidAssetError
+      ) {
+        rethrowAssetError(error);
+      }
       rethrowDocumentError(error);
     }
   });

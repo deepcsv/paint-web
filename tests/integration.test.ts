@@ -6,6 +6,9 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { WebSocketServer, WebSocket } from "ws";
 import { createServer } from "node:http";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { Router } from "../server/rpc/router.js";
 import { ServerState } from "../server/state.js";
 import { EventBus } from "../server/event-bus.js";
@@ -15,11 +18,14 @@ import { registerHandlers } from "../server/handlers/index.js";
 import { registerTempSnapshot } from "../server/http-server.js";
 import { saveSnapshotPng } from "../server/persistence.js";
 import { DocumentStore } from "../server/document-store.js";
+import { AssetStore } from "../server/asset-store.js";
 
 let httpServer: ReturnType<typeof createServer>;
 let wss: WebSocketServer;
 let primary: PrimaryClient;
 let state: ServerState;
+let assetStore: AssetStore;
+let assetDirectory: string;
 
 function listenAsync(srv: ReturnType<typeof createServer>): Promise<number> {
   return new Promise((resolve) => {
@@ -36,6 +42,9 @@ beforeAll(async () => {
   const port = await listenAsync(httpServer);
 
   state = new ServerState();
+  assetDirectory = await mkdtemp(join(tmpdir(), "paint-web-integration-assets-"));
+  assetStore = new AssetStore(assetDirectory);
+  await assetStore.init();
   const events = new EventBus(wss);
   primary = new PrimaryClient();
   const opLog = new (await import("../server/op-log.js")).OpLog({ persist: false });
@@ -61,6 +70,7 @@ beforeAll(async () => {
     primary,
     opLog,
     documentStore,
+    assetStore,
     registerTempSnapshot,
     saveSnapshotPng,
   });
@@ -73,6 +83,7 @@ beforeAll(async () => {
 afterAll(async () => {
   for (const c of wss.clients) c.close();
   await new Promise<void>((r) => httpServer.close(() => r()));
+  await rm(assetDirectory, { recursive: true });
 });
 
 interface TestClient {
@@ -130,6 +141,25 @@ function makeClient(role: "browser" | "agent"): TestClient {
                       png: "dGVzdA==",
                     })),
                   }
+                : params.origMethod === "canvas.analyze"
+                  ? {
+                      width: state.width,
+                      height: state.height,
+                      stride: 1,
+                      sampledPixels: 1,
+                      opaquePixels: 1,
+                      coverage: 1,
+                      bounds: { x: 0, y: 0, w: 1, h: 1 },
+                      average: { r: 255, g: 0, b: 0, a: 255, hex: "#ff0000ff" },
+                      luminance: { min: 0.2126, max: 0.2126, mean: 0.2126, histogram: [1, 0, 0, 0] },
+                      dominant: [
+                        {
+                          color: { r: 255, g: 0, b: 0, a: 255, hex: "#ff0000ff" },
+                          count: 1,
+                          ratio: 1,
+                        },
+                      ],
+                    }
                 : { fake: true, method: params.origMethod };
             ws.send(
               JSON.stringify({
@@ -386,6 +416,81 @@ describe("RPC harness", () => {
       method: "layer.create",
       params: { layerId: created.layerId, name: "Generated" },
     });
+
+    await agent.close();
+    await browser.close();
+  });
+
+  it("composes P1 assets, advanced primitives and visual analysis", async () => {
+    const browser = makeClient("browser");
+    await browser.connect();
+    const agent = makeClient("agent");
+    await agent.connect();
+    const png =
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
+    const asset = await agent.rpc<{ id: string; existing: boolean }>("asset.put", {
+      data: png,
+      mimeType: "image/png",
+      name: "integration pixel",
+    });
+
+    const transaction = await agent.rpc<{ transactionId: string; revision: number }>(
+      "transaction.execute",
+      {
+        idempotencyKey: "integration-p1-primitives-1",
+        message: "P1 primitives",
+        operations: [
+          {
+            method: "draw.path",
+            params: {
+              layerId: state.activeLayerId,
+              commands: [
+                { op: "M", x: 0, y: 0 },
+                { op: "L", x: 20, y: 20 },
+              ],
+              stroke: "#ff0000",
+            },
+          },
+          {
+            method: "draw.image",
+            params: {
+              layerId: state.activeLayerId,
+              assetId: asset.id,
+              x: 4,
+              y: 5,
+              width: 12,
+              height: 12,
+            },
+          },
+          {
+            method: "layer.transform",
+            params: { layerId: state.activeLayerId, translateX: 3, translateY: 2 },
+          },
+        ],
+      },
+    );
+    const analysis = await agent.rpc<{ average: { hex: string }; coverage: number }>(
+      "canvas.analyze",
+      {},
+    );
+    const assets = await agent.rpc<{ assets: { id: string }[] }>("asset.list", {});
+    const document = await agent.rpc<{
+      operations: { method: string; transactionId?: string }[];
+    }>("doc.get", {});
+    const rendered = await agent.rpc<{ digest: string; warnings: string[] }>("doc.render", {
+      format: "svg",
+    });
+
+    expect(asset.existing).toBe(false);
+    expect(assets.assets).toContainEqual(expect.objectContaining({ id: asset.id }));
+    expect(analysis).toMatchObject({ average: { hex: "#ff0000ff" }, coverage: 1 });
+    expect(
+      document.operations
+        .filter((operation) => operation.transactionId === transaction.transactionId)
+        .map((operation) => operation.method),
+    ).toEqual(["draw.path", "draw.image", "layer.transform"]);
+    expect(rendered.digest).toMatch(/^[a-f0-9]{64}$/);
+    expect(rendered.warnings).toEqual([]);
 
     await agent.close();
     await browser.close();

@@ -16,6 +16,26 @@ export interface HeadlessRenderResult {
   warnings: string[];
 }
 
+export interface HeadlessAsset {
+  dataUrl: string;
+  width: number;
+  height: number;
+}
+
+export interface HeadlessRenderOptions {
+  assets?: ReadonlyMap<string, HeadlessAsset>;
+}
+
+export function collectDocumentAssetIds(snapshot: DocumentReplaySnapshot): string[] {
+  return [
+    ...new Set(
+      snapshot.operations
+        .map((operation) => operationParams(operation).assetId)
+        .filter((assetId): assetId is string => typeof assetId === "string"),
+    ),
+  ].sort();
+}
+
 function escapeXml(value: unknown): string {
   return String(value)
     .replaceAll("&", "&amp;")
@@ -55,7 +75,10 @@ function operationParams(operation: DocumentOperation): Record<string, unknown> 
  * baselines are embedded as data URLs. Unsupported pixel algorithms are
  * reported as warnings instead of silently producing nondeterministic output.
  */
-export function renderDocumentToSvg(snapshot: DocumentReplaySnapshot): HeadlessRenderResult {
+export function renderDocumentToSvg(
+  snapshot: DocumentReplaySnapshot,
+  options: HeadlessRenderOptions = {},
+): HeadlessRenderResult {
   let width = snapshot.baseState.width;
   let height = snapshot.baseState.height;
   const warnings: string[] = [];
@@ -123,11 +146,20 @@ export function renderDocumentToSvg(snapshot: DocumentReplaySnapshot): HeadlessR
         }
         break;
       case "canvas.import":
-        if (layer && typeof params.url === "string") {
+        if (layer && typeof params.assetId === "string") {
+          const asset = options.assets?.get(params.assetId);
+          if (asset) {
+            layer.elements = [
+              `<image x="0" y="0" width="${asset.width}" height="${asset.height}" href="${escapeXml(asset.dataUrl)}"/>`,
+            ];
+          } else {
+            warn(`Missing headless asset: ${params.assetId}`);
+          }
+        } else if (layer && typeof params.url === "string") {
           layer.elements = [
             `<image x="0" y="0" width="${width}" height="${height}" href="${escapeXml(params.url)}"/>`,
           ];
-          warn("canvas.import references an external URL; archive the asset for durable replay");
+          warn("canvas.import references an external URL; raster keyframe is recommended");
         }
         break;
       case "layer.create": {
@@ -214,6 +246,28 @@ export function renderDocumentToSvg(snapshot: DocumentReplaySnapshot): HeadlessR
         order = [flattenedId];
         break;
       }
+      case "layer.transform": {
+        if (!layer) break;
+        const translateX = number(params.translateX);
+        const translateY = number(params.translateY);
+        const scaleX = number(params.scaleX, 1);
+        const scaleY = number(params.scaleY, 1);
+        const radians = (number(params.rotate) * Math.PI) / 180;
+        const pivotX = number(params.pivotX, width / 2);
+        const pivotY = number(params.pivotY, height / 2);
+        const cosine = Math.cos(radians);
+        const sine = Math.sin(radians);
+        const a = cosine * scaleX;
+        const b = sine * scaleX;
+        const c = -sine * scaleY;
+        const d = cosine * scaleY;
+        const e = pivotX + translateX - a * pivotX - c * pivotY;
+        const f = pivotY + translateY - b * pivotX - d * pivotY;
+        layer.elements = [
+          `<g transform="matrix(${a} ${b} ${c} ${d} ${e} ${f})">${layer.elements.join("")}</g>`,
+        ];
+        break;
+      }
       case "draw.line":
         if (layer) {
           const from = (params.from ?? {}) as Record<string, unknown>;
@@ -277,6 +331,98 @@ export function renderDocumentToSvg(snapshot: DocumentReplaySnapshot): HeadlessR
           );
         }
         break;
+      case "draw.path": {
+        if (!layer) break;
+        const commands = Array.isArray(params.commands)
+          ? params.commands.map((command) => command as Record<string, unknown>)
+          : [];
+        const d = commands
+          .map((command) => {
+            switch (command.op) {
+              case "M":
+              case "L":
+                return `${command.op} ${number(command.x)} ${number(command.y)}`;
+              case "Q":
+                return `Q ${number(command.cx)} ${number(command.cy)} ${number(command.x)} ${number(command.y)}`;
+              case "C":
+                return `C ${number(command.c1x)} ${number(command.c1y)} ${number(command.c2x)} ${number(command.c2y)} ${number(command.x)} ${number(command.y)}`;
+              case "Z":
+                return "Z";
+              default:
+                return "";
+            }
+          })
+          .filter(Boolean)
+          .join(" ");
+        layer.elements.push(
+          `<path d="${escapeXml(d)}"${attr("fill", params.fill ?? "none")}${attr("stroke", params.stroke)}${attr("stroke-width", params.strokeWidth)}${attr("opacity", params.opacity)}${attr("fill-rule", params.fillRule)}${attr("stroke-linecap", params.lineCap)}${attr("stroke-linejoin", params.lineJoin)}/>` ,
+        );
+        break;
+      }
+      case "draw.gradient": {
+        if (!layer) break;
+        const gradient = (params.gradient ?? {}) as Record<string, unknown>;
+        const shape = (params.shape ?? {}) as Record<string, unknown>;
+        const stops = Array.isArray(params.stops)
+          ? params.stops.map((stop) => stop as Record<string, unknown>)
+          : [];
+        const id = `gradient-${suffix}`;
+        const stopMarkup = stops
+          .map(
+            (stop) =>
+              `<stop offset="${number(stop.offset) * 100}%" stop-color="${escapeXml(stop.color)}"/>`,
+          )
+          .join("");
+        if (gradient.type === "radial") {
+          const inner = (gradient.inner ?? {}) as Record<string, unknown>;
+          const outer = (gradient.outer ?? {}) as Record<string, unknown>;
+          defs.push(
+            `<radialGradient id="${id}" gradientUnits="userSpaceOnUse" cx="${number(outer.x)}" cy="${number(outer.y)}" r="${number(outer.r)}" fx="${number(inner.x)}" fy="${number(inner.y)}" fr="${number(inner.r)}">${stopMarkup}</radialGradient>`,
+          );
+        } else {
+          const from = (gradient.from ?? {}) as Record<string, unknown>;
+          const to = (gradient.to ?? {}) as Record<string, unknown>;
+          defs.push(
+            `<linearGradient id="${id}" gradientUnits="userSpaceOnUse" x1="${number(from.x)}" y1="${number(from.y)}" x2="${number(to.x)}" y2="${number(to.y)}">${stopMarkup}</linearGradient>`,
+          );
+        }
+        const fill = `url(#${id})`;
+        const opacity = attr("opacity", params.opacity);
+        if (shape.type === "circle") {
+          layer.elements.push(
+            `<circle cx="${number(shape.cx)}" cy="${number(shape.cy)}" r="${number(shape.r)}" fill="${fill}"${opacity}/>` ,
+          );
+        } else if (shape.type === "ellipse") {
+          layer.elements.push(
+            `<ellipse cx="${number(shape.cx)}" cy="${number(shape.cy)}" rx="${number(shape.rx)}" ry="${number(shape.ry)}" fill="${fill}"${opacity}/>` ,
+          );
+        } else {
+          layer.elements.push(
+            `<rect x="${number(shape.x)}" y="${number(shape.y)}" width="${number(shape.w)}" height="${number(shape.h)}" fill="${fill}"${opacity}/>` ,
+          );
+        }
+        break;
+      }
+      case "draw.image": {
+        if (!layer || typeof params.assetId !== "string") break;
+        const asset = options.assets?.get(params.assetId);
+        if (!asset) {
+          warn(`Missing headless asset: ${params.assetId}`);
+          break;
+        }
+        const imageWidth = number(params.width, asset.width);
+        const imageHeight = number(params.height, asset.height);
+        const x = number(params.x);
+        const y = number(params.y);
+        const rotation = number(params.rotate);
+        const transform = rotation
+          ? ` transform="rotate(${rotation} ${x + imageWidth / 2} ${y + imageHeight / 2})"`
+          : "";
+        layer.elements.push(
+          `<image x="${x}" y="${y}" width="${imageWidth}" height="${imageHeight}" href="${escapeXml(asset.dataUrl)}"${attr("opacity", params.opacity)}${transform}/>` ,
+        );
+        break;
+      }
       case "draw.fill":
         warn("draw.fill flood-fill is not represented in SVG preview");
         break;

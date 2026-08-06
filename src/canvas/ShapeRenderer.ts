@@ -1,3 +1,5 @@
+import type { DrawGradientParams, DrawPathParams } from "../../shared/protocol.js";
+
 type AnyCtx = CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D;
 
 export interface LineOpts {
@@ -133,6 +135,91 @@ export class ShapeRenderer {
     ctx.save();
     ctx.fillStyle = color;
     ctx.fillRect(Math.floor(x), Math.floor(y), 1, 1);
+    ctx.restore();
+  }
+
+  static path(ctx: AnyCtx, opts: DrawPathParams): void {
+    ctx.save();
+    ctx.globalAlpha = opts.opacity;
+    ctx.lineWidth = opts.strokeWidth;
+    ctx.lineCap = opts.lineCap;
+    ctx.lineJoin = opts.lineJoin;
+    ctx.beginPath();
+    for (const command of opts.commands) {
+      switch (command.op) {
+        case "M":
+          ctx.moveTo(command.x, command.y);
+          break;
+        case "L":
+          ctx.lineTo(command.x, command.y);
+          break;
+        case "Q":
+          ctx.quadraticCurveTo(command.cx, command.cy, command.x, command.y);
+          break;
+        case "C":
+          ctx.bezierCurveTo(
+            command.c1x,
+            command.c1y,
+            command.c2x,
+            command.c2y,
+            command.x,
+            command.y,
+          );
+          break;
+        case "Z":
+          ctx.closePath();
+          break;
+      }
+    }
+    if (opts.fill) {
+      ctx.fillStyle = opts.fill;
+      ctx.fill(opts.fillRule);
+    }
+    if (opts.stroke) {
+      ctx.strokeStyle = opts.stroke;
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  static gradient(ctx: AnyCtx, opts: DrawGradientParams): void {
+    ctx.save();
+    ctx.globalAlpha = opts.opacity;
+    const paint =
+      opts.gradient.type === "linear"
+        ? ctx.createLinearGradient(
+            opts.gradient.from.x,
+            opts.gradient.from.y,
+            opts.gradient.to.x,
+            opts.gradient.to.y,
+          )
+        : ctx.createRadialGradient(
+            opts.gradient.inner.x,
+            opts.gradient.inner.y,
+            opts.gradient.inner.r,
+            opts.gradient.outer.x,
+            opts.gradient.outer.y,
+            opts.gradient.outer.r,
+          );
+    for (const stop of opts.stops) paint.addColorStop(stop.offset, stop.color);
+    ctx.fillStyle = paint;
+    ctx.beginPath();
+    if (opts.shape.type === "rect") {
+      ctx.rect(opts.shape.x, opts.shape.y, opts.shape.w, opts.shape.h);
+    } else if (opts.shape.type === "circle") {
+      ctx.arc(opts.shape.cx, opts.shape.cy, opts.shape.r, 0, Math.PI * 2);
+    } else {
+      ctx.ellipse(
+        opts.shape.cx,
+        opts.shape.cy,
+        opts.shape.rx,
+        opts.shape.ry,
+        0,
+        0,
+        Math.PI * 2,
+      );
+    }
+    ctx.fill();
     ctx.restore();
   }
 }

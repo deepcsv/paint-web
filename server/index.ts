@@ -17,6 +17,7 @@ import {
 } from "./persistence.js";
 import { registerHandlers } from "./handlers/index.js";
 import { DocumentStore } from "./document-store.js";
+import { AssetStore } from "./asset-store.js";
 
 const HOST = process.env.PAINT_HOST ?? "127.0.0.1";
 const PORT = parseInt(process.env.PAINT_PORT ?? "8080", 10);
@@ -24,6 +25,8 @@ const TOKEN = process.env.PAINT_TOKEN;
 
 async function main() {
   await ensureDataDir();
+  const assetStore = new AssetStore();
+  await assetStore.init();
 
   const state = new ServerState();
   const saved = await loadState();
@@ -60,7 +63,7 @@ async function main() {
     });
   }
 
-  const httpServer = createHttpServer(vite);
+  const httpServer = createHttpServer(vite, assetStore);
   const wss = new WebSocketServer({ server: httpServer });
   const events = new EventBus(wss);
   const primary = new PrimaryClient();
@@ -91,6 +94,7 @@ async function main() {
     primary,
     opLog,
     documentStore,
+    assetStore,
     registerTempSnapshot,
     saveSnapshotPng,
   });

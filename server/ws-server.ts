@@ -124,7 +124,7 @@ export function attachWsServer(deps: WsServerDeps): void {
       }
       if (isDocumentMutationMethod(rpcReq.method)) {
         try {
-          const raster = needsRasterKeyframe(rpcReq.method)
+          const raster = needsRasterKeyframe(rpcReq.method, canonicalParams)
             ? ((await primary.exec("canvas.getState", {})) as {
                 layers?: { id: string; png: string }[];
               }).layers?.map(({ id, png }) => ({ id, png }))

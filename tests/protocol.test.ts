@@ -1,6 +1,10 @@
 import { describe, it, expect } from "vitest";
 import {
+  AssetPutParams,
+  CanvasImportParams,
   DrawStrokeParams,
+  DrawGradientParams,
+  DrawPathParams,
   DrawFillParams,
   DrawTextParams,
   CanvasExportParams,
@@ -120,5 +124,50 @@ describe("protocol schemas", () => {
         replayable: true,
       }).success,
     ).toBe(true);
+  });
+
+  it("CanvasImportParams requires exactly one durable or external source", () => {
+    const assetId = `A_${"a".repeat(64)}`;
+    expect(CanvasImportParams.safeParse({ assetId }).success).toBe(true);
+    expect(CanvasImportParams.safeParse({ url: "/snapshot/example" }).success).toBe(true);
+    expect(CanvasImportParams.safeParse({}).success).toBe(false);
+    expect(CanvasImportParams.safeParse({ assetId, url: "/both" }).success).toBe(false);
+  });
+
+  it("validates P1 paths and ordered gradients", () => {
+    expect(
+      DrawPathParams.safeParse({
+        layerId: "L_path",
+        commands: [{ op: "M", x: 0, y: 0 }, { op: "L", x: 10, y: 10 }],
+        stroke: "#000000",
+      }).success,
+    ).toBe(true);
+    expect(
+      DrawPathParams.safeParse({
+        layerId: "L_path",
+        commands: [{ op: "L", x: 0, y: 0 }, { op: "Z" }],
+        fill: "#ffffff",
+      }).success,
+    ).toBe(false);
+    expect(
+      DrawGradientParams.safeParse({
+        layerId: "L_gradient",
+        gradient: { type: "linear", from: { x: 0, y: 0 }, to: { x: 100, y: 0 } },
+        shape: { type: "rect", x: 0, y: 0, w: 100, h: 100 },
+        stops: [
+          { offset: 0.8, color: "#ffffff" },
+          { offset: 0.2, color: "#000000" },
+        ],
+      }).success,
+    ).toBe(false);
+  });
+
+  it("rejects unsupported asset media and malformed base64", () => {
+    expect(
+      AssetPutParams.safeParse({ data: "aW1hZ2U=", mimeType: "image/png", name: "reference" })
+        .success,
+    ).toBe(true);
+    expect(AssetPutParams.safeParse({ data: "%%%", mimeType: "image/png" }).success).toBe(false);
+    expect(AssetPutParams.safeParse({ data: "aW1hZ2U=", mimeType: "image/svg+xml" }).success).toBe(false);
   });
 });

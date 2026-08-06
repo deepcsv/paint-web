@@ -79,4 +79,13 @@ export class RpcError extends Error {
   static versionNotFound(message: string, data?: unknown) {
     return new RpcError(RpcErrorCode.VERSION_NOT_FOUND, message, data);
   }
+  static assetNotFound(assetId: string) {
+    return new RpcError(RpcErrorCode.ASSET_NOT_FOUND, `Asset not found: ${assetId}`);
+  }
+  static assetTooLarge(message: string, data?: unknown) {
+    return new RpcError(RpcErrorCode.ASSET_TOO_LARGE, message, data);
+  }
+  static invalidAsset(message: string, data?: unknown) {
+    return new RpcError(RpcErrorCode.INVALID_ASSET, message, data);
+  }
 }

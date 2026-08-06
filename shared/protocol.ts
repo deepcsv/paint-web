@@ -61,6 +61,9 @@ export const RpcErrorCode = {
   DOCUMENT_CONFLICT: -32008,
   TRANSACTION_ABORTED: -32009,
   VERSION_NOT_FOUND: -32010,
+  ASSET_NOT_FOUND: -32011,
+  ASSET_TOO_LARGE: -32012,
+  INVALID_ASSET: -32013,
 } as const;
 
 // ---------------------------------------------------------------------------
@@ -90,6 +93,11 @@ export type Rect = z.infer<typeof Rect>;
 
 export const LayerId = z.string();
 export type LayerId = z.infer<typeof LayerId>;
+
+export const AssetId = z.string().regex(/^A_[a-f0-9]{64}$/);
+export type AssetId = z.infer<typeof AssetId>;
+export const AssetMimeType = z.enum(["image/png", "image/jpeg"]);
+export type AssetMimeType = z.infer<typeof AssetMimeType>;
 
 export const BlendMode = z.enum([
   "source-over",
@@ -178,10 +186,15 @@ export const CanvasExportResult = z.object({
 });
 export type CanvasExportResult = z.infer<typeof CanvasExportResult>;
 
-export const CanvasImportParams = z.object({
-  url: z.string(),
-  layerId: LayerId.optional(),
-});
+export const CanvasImportParams = z
+  .object({
+    url: z.string().min(1).optional(),
+    assetId: AssetId.optional(),
+    layerId: LayerId.optional(),
+  })
+  .refine((value) => Number(Boolean(value.url)) + Number(Boolean(value.assetId)) === 1, {
+    message: "Exactly one of url or assetId is required",
+  });
 export type CanvasImportParams = z.infer<typeof CanvasImportParams>;
 
 export const CanvasGetRegionParams = z.object({
@@ -197,6 +210,63 @@ export const CanvasGetRegionResult = z.object({
   expiresAt: z.number(),
 });
 export type CanvasGetRegionResult = z.infer<typeof CanvasGetRegionResult>;
+
+export const CanvasAnalyzeParams = z
+  .object({
+    layerId: LayerId.optional(),
+    stride: z.number().int().min(1).max(32).default(1),
+    alphaThreshold: z.number().int().min(0).max(255).default(1),
+    histogramBins: z.number().int().min(4).max(64).default(16),
+    dominantColors: z.number().int().min(1).max(12).default(5),
+    includeBackground: z.boolean().default(false),
+  })
+  .optional();
+export type CanvasAnalyzeParams = z.infer<typeof CanvasAnalyzeParams>;
+
+export const RgbaColor = z.object({
+  r: z.number().int().min(0).max(255),
+  g: z.number().int().min(0).max(255),
+  b: z.number().int().min(0).max(255),
+  a: z.number().int().min(0).max(255),
+  hex: z.string().regex(/^#[a-f0-9]{8}$/),
+});
+export type RgbaColor = z.infer<typeof RgbaColor>;
+
+export const CanvasAnalyzeResult = z.object({
+  width: z.number().int().positive(),
+  height: z.number().int().positive(),
+  stride: z.number().int().positive(),
+  sampledPixels: z.number().int().nonnegative(),
+  opaquePixels: z.number().int().nonnegative(),
+  coverage: z.number().min(0).max(1),
+  bounds: z
+    .object({ x: z.number(), y: z.number(), w: z.number(), h: z.number() })
+    .nullable(),
+  average: RgbaColor,
+  luminance: z.object({
+    min: z.number().min(0).max(1),
+    max: z.number().min(0).max(1),
+    mean: z.number().min(0).max(1),
+    histogram: z.array(z.number().int().nonnegative()),
+  }),
+  dominant: z.array(
+    z.object({ color: RgbaColor, count: z.number().int().positive(), ratio: z.number() }),
+  ),
+});
+export type CanvasAnalyzeResult = z.infer<typeof CanvasAnalyzeResult>;
+
+export const CanvasSampleParams = z.object({
+  layerId: LayerId.optional(),
+  points: z
+    .array(z.object({ x: z.number().int().nonnegative(), y: z.number().int().nonnegative() }))
+    .min(1)
+    .max(512),
+});
+export type CanvasSampleParams = z.infer<typeof CanvasSampleParams>;
+export const CanvasSampleResult = z.object({
+  samples: z.array(z.object({ x: z.number(), y: z.number(), color: RgbaColor })),
+});
+export type CanvasSampleResult = z.infer<typeof CanvasSampleResult>;
 
 // ---------------------------------------------------------------------------
 // layer.* methods
@@ -262,6 +332,19 @@ export const LayerFlattenParams = z
 export type LayerFlattenParams = z.infer<typeof LayerFlattenParams>;
 export const LayerFlattenResult = z.object({ id: LayerId, name: z.string() });
 export type LayerFlattenResult = z.infer<typeof LayerFlattenResult>;
+
+export const LayerTransformParams = z.object({
+  layerId: LayerId,
+  translateX: z.number().default(0),
+  translateY: z.number().default(0),
+  scaleX: z.number().min(-100).max(100).refine((value) => value !== 0).default(1),
+  scaleY: z.number().min(-100).max(100).refine((value) => value !== 0).default(1),
+  rotate: z.number().min(-36000).max(36000).default(0),
+  pivotX: z.number().optional(),
+  pivotY: z.number().optional(),
+  smoothing: z.boolean().default(true),
+});
+export type LayerTransformParams = z.infer<typeof LayerTransformParams>;
 
 // ---------------------------------------------------------------------------
 // draw.* methods
@@ -355,6 +438,113 @@ export const DrawSetPixelParams = z.object({
   color: Color,
 });
 export type DrawSetPixelParams = z.infer<typeof DrawSetPixelParams>;
+
+export const PathCommand = z.discriminatedUnion("op", [
+  z.object({ op: z.literal("M"), x: z.number(), y: z.number() }),
+  z.object({ op: z.literal("L"), x: z.number(), y: z.number() }),
+  z.object({ op: z.literal("Q"), cx: z.number(), cy: z.number(), x: z.number(), y: z.number() }),
+  z.object({
+    op: z.literal("C"),
+    c1x: z.number(),
+    c1y: z.number(),
+    c2x: z.number(),
+    c2y: z.number(),
+    x: z.number(),
+    y: z.number(),
+  }),
+  z.object({ op: z.literal("Z") }),
+]);
+export type PathCommand = z.infer<typeof PathCommand>;
+
+export const DrawPathParams = z
+  .object({
+    layerId: LayerId,
+    commands: z.array(PathCommand).min(2).max(4096),
+    stroke: Color.optional(),
+    fill: Color.optional(),
+    strokeWidth: z.number().positive().max(500).default(1),
+    opacity: z.number().min(0).max(1).default(1),
+    fillRule: z.enum(["nonzero", "evenodd"]).default("nonzero"),
+    lineCap: z.enum(["butt", "round", "square"]).default("round"),
+    lineJoin: z.enum(["round", "bevel", "miter"]).default("round"),
+  })
+  .refine((value) => value.commands[0]?.op === "M", {
+    message: "Path must start with an M command",
+    path: ["commands", 0],
+  })
+  .refine((value) => Boolean(value.stroke || value.fill), {
+    message: "Path requires stroke or fill",
+  });
+export type DrawPathParams = z.infer<typeof DrawPathParams>;
+
+export const GradientStop = z.object({
+  offset: z.number().min(0).max(1),
+  color: Color,
+});
+export type GradientStop = z.infer<typeof GradientStop>;
+
+export const GradientDefinition = z.discriminatedUnion("type", [
+  z.object({ type: z.literal("linear"), from: Point, to: Point }),
+  z.object({
+    type: z.literal("radial"),
+    inner: z.object({ x: z.number(), y: z.number(), r: z.number().nonnegative() }),
+    outer: z.object({ x: z.number(), y: z.number(), r: z.number().positive() }),
+  }),
+]);
+export type GradientDefinition = z.infer<typeof GradientDefinition>;
+
+export const GradientShape = z.discriminatedUnion("type", [
+  z.object({
+    type: z.literal("rect"),
+    x: z.number(),
+    y: z.number(),
+    w: z.number().positive(),
+    h: z.number().positive(),
+  }),
+  z.object({ type: z.literal("circle"), cx: z.number(), cy: z.number(), r: z.number().positive() }),
+  z.object({
+    type: z.literal("ellipse"),
+    cx: z.number(),
+    cy: z.number(),
+    rx: z.number().positive(),
+    ry: z.number().positive(),
+  }),
+]);
+export type GradientShape = z.infer<typeof GradientShape>;
+
+export const DrawGradientParams = z
+  .object({
+    layerId: LayerId,
+    gradient: GradientDefinition,
+    shape: GradientShape,
+    stops: z.array(GradientStop).min(2).max(32),
+    opacity: z.number().min(0).max(1).default(1),
+  })
+  .superRefine((value, ctx) => {
+    for (let index = 1; index < value.stops.length; index++) {
+      if (value.stops[index]!.offset < value.stops[index - 1]!.offset) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "Gradient stops must be ordered by offset",
+          path: ["stops", index, "offset"],
+        });
+      }
+    }
+  });
+export type DrawGradientParams = z.infer<typeof DrawGradientParams>;
+
+export const DrawImageParams = z.object({
+  layerId: LayerId,
+  assetId: AssetId,
+  x: z.number(),
+  y: z.number(),
+  width: z.number().positive().optional(),
+  height: z.number().positive().optional(),
+  opacity: z.number().min(0).max(1).default(1),
+  rotate: z.number().min(-36000).max(36000).default(0),
+  smoothing: z.boolean().default(true),
+});
+export type DrawImageParams = z.infer<typeof DrawImageParams>;
 
 export const DrawBatchParams = z.object({
   operations: z
@@ -452,6 +642,43 @@ export const SnapshotLoadResult = z.object({
   layers: z.number(),
 });
 export type SnapshotLoadResult = z.infer<typeof SnapshotLoadResult>;
+
+// ---------------------------------------------------------------------------
+// asset.* — P1 immutable content-addressed raster assets
+// ---------------------------------------------------------------------------
+
+export const AssetMetadata = z.object({
+  id: AssetId,
+  sha256: z.string().regex(/^[a-f0-9]{64}$/),
+  mimeType: AssetMimeType,
+  size: z.number().int().positive(),
+  width: z.number().int().positive(),
+  height: z.number().int().positive(),
+  name: z.string().optional(),
+  createdAt: z.number(),
+  url: z.string(),
+});
+export type AssetMetadata = z.infer<typeof AssetMetadata>;
+
+export const AssetPutParams = z.object({
+  data: z
+    .string()
+    .min(4)
+    .max(28_000_000)
+    .regex(/^[A-Za-z0-9+/]*={0,2}$/, "Expected base64 asset data"),
+  mimeType: AssetMimeType,
+  name: z.string().min(1).max(128).optional(),
+});
+export type AssetPutParams = z.infer<typeof AssetPutParams>;
+export const AssetPutResult = AssetMetadata.extend({ existing: z.boolean() });
+export type AssetPutResult = z.infer<typeof AssetPutResult>;
+
+export const AssetGetParams = z.object({ assetId: AssetId });
+export const AssetListParams = z
+  .object({ limit: z.number().int().positive().max(1000).default(100) })
+  .optional();
+export const AssetListResult = z.object({ assets: z.array(AssetMetadata) });
+export type AssetListResult = z.infer<typeof AssetListResult>;
 
 // ---------------------------------------------------------------------------
 // transaction.* and doc.* — P0 canonical document/version foundation
@@ -641,6 +868,7 @@ export const EVENT_TYPES = [
   "layer.reordered",
   "layer.merged",
   "layer.flattened",
+  "layer.transformed",
   "canvas.resized",
   "canvas.cleared",
   "canvas.filled",
@@ -688,6 +916,8 @@ export const METHODS: Record<string, MethodDef> = {
   "canvas.export": { params: CanvasExportParams, result: CanvasExportResult, needsPrimary: true },
   "canvas.import": { params: CanvasImportParams, needsPrimary: true, emitsEvent: "canvas.imported" },
   "canvas.getRegion": { params: CanvasGetRegionParams, result: CanvasGetRegionResult, needsPrimary: true },
+  "canvas.analyze": { params: CanvasAnalyzeParams, result: CanvasAnalyzeResult, needsPrimary: true },
+  "canvas.sample": { params: CanvasSampleParams, result: CanvasSampleResult, needsPrimary: true },
 
   // layer.*
   "layer.create": { params: LayerCreateParams, result: LayerCreateResult, needsPrimary: true, emitsEvent: "layer.created" },
@@ -701,6 +931,7 @@ export const METHODS: Record<string, MethodDef> = {
   "layer.reorder": { params: LayerReorderParams, needsPrimary: true, emitsEvent: "layer.reordered" },
   "layer.merge": { params: LayerMergeParams, needsPrimary: true, emitsEvent: "layer.merged" },
   "layer.flatten": { params: LayerFlattenParams, result: LayerFlattenResult, needsPrimary: true, emitsEvent: "layer.flattened" },
+  "layer.transform": { params: LayerTransformParams, needsPrimary: true, emitsEvent: "layer.transformed" },
 
   // draw.*
   "draw.stroke": { params: DrawStrokeParams, needsPrimary: true, emitsEvent: "stroke.committed" },
@@ -711,6 +942,9 @@ export const METHODS: Record<string, MethodDef> = {
   "draw.fill": { params: DrawFillParams, needsPrimary: true, emitsEvent: "stroke.committed" },
   "draw.text": { params: DrawTextParams, needsPrimary: true, emitsEvent: "stroke.committed" },
   "draw.setPixel": { params: DrawSetPixelParams, needsPrimary: true, emitsEvent: "stroke.committed" },
+  "draw.path": { params: DrawPathParams, needsPrimary: true, emitsEvent: "stroke.committed" },
+  "draw.gradient": { params: DrawGradientParams, needsPrimary: true, emitsEvent: "stroke.committed" },
+  "draw.image": { params: DrawImageParams, needsPrimary: true, emitsEvent: "stroke.committed" },
   "draw.batch": { params: DrawBatchParams, result: DrawBatchResult, needsPrimary: true, emitsEvent: "draw.batched" },
 
   // history.*
@@ -730,6 +964,11 @@ export const METHODS: Record<string, MethodDef> = {
   // snapshot.*
   "snapshot.save": { params: SnapshotSaveParams, result: SnapshotSaveResult, needsPrimary: true, emitsEvent: "snapshot.saved" },
   "snapshot.load": { params: SnapshotLoadParams, result: SnapshotLoadResult, needsPrimary: true, emitsEvent: "snapshot.loaded" },
+
+  // asset.* — immutable content-addressed raster library.
+  "asset.put": { params: AssetPutParams, result: AssetPutResult },
+  "asset.get": { params: AssetGetParams, result: AssetMetadata },
+  "asset.list": { params: AssetListParams, result: AssetListResult },
 
   // transaction.* — validated, serialized and rolled back as one commit.
   "transaction.execute": {
