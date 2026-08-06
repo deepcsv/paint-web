@@ -1,3 +1,13 @@
-node_modules
-dist
-.env
+# Canonical document runtime persistence and atomic-write artifacts
+data/document.json
+data/document.json.bak
+data/document.json.tmp
+data/state.json.bak
+data/state.json.tmp
+data/tmp/
+
+# Build output and local dependencies
+dist/
+dist-server/
+dist-cli/
+node_modules/
