@@ -632,17 +632,19 @@ internalHandlers.set("document.restoreRaster", async (params) => {
 internalHandlers.set("document.replay", async (params) => {
   const snapshot = params as DocumentReplaySnapshot;
   if (!snapshot.replayable) throw new Error("Document has no captured pixel baseline");
-  await restoreRasterState(snapshot.baseState, snapshot.baseRaster);
   const warnings: string[] = [];
-  for (const operation of snapshot.operations) {
-    const handler = internalHandlers.get(operation.method);
-    if (!handler || operation.method.startsWith("document.")) {
-      warnings.push(`Skipped unsupported replay operation: ${operation.method}`);
-      continue;
+  await controller.withoutHistory(async () => {
+    await restoreRasterState(snapshot.baseState, snapshot.baseRaster);
+    for (const operation of snapshot.operations) {
+      const handler = internalHandlers.get(operation.method);
+      if (!handler || operation.method.startsWith("document.")) {
+        warnings.push(`Skipped unsupported replay operation: ${operation.method}`);
+        continue;
+      }
+      await handler(operation.params);
     }
-    await handler(operation.params);
-  }
-  controller.reconcileFromServer(snapshot.state.layers, snapshot.state.activeLayerId);
+    controller.reconcileFromServer(snapshot.state.layers, snapshot.state.activeLayerId);
+  });
   controller.clearHistory();
   controller.triggerRender();
   refreshLayerPanel();

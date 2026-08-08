@@ -48,6 +48,7 @@ export class CanvasController {
   readonly renderCanvas: HTMLCanvasElement;
   private renderCtx: CanvasRenderingContext2D;
   private renderScheduled = false;
+  private historyEnabled = true;
   private onAfterChange?: () => void;
 
   constructor(width: number, height: number, renderCanvas: HTMLCanvasElement) {
@@ -90,8 +91,26 @@ export class CanvasController {
   }
 
   private snapshotForUndo(layerId: LayerId): void {
+    if (!this.historyEnabled) return;
     const data = this.layers.getLayerImageData(layerId);
     if (data) this.history.pushBeforeChange(layerId, data);
+  }
+
+  /**
+   * Apply a deterministic document replay without allocating a full-canvas
+   * undo snapshot for every historical operation. A detailed artwork can
+   * contain thousands of strokes; replay history is already preserved by the
+   * canonical document log, so duplicating it as ImageData is both redundant
+   * and capable of exhausting the browser's memory.
+   */
+  async withoutHistory<T>(operation: () => T | Promise<T>): Promise<T> {
+    const previouslyEnabled = this.historyEnabled;
+    this.historyEnabled = false;
+    try {
+      return await operation();
+    } finally {
+      this.historyEnabled = previouslyEnabled;
+    }
   }
 
   private getCtx(layerId: LayerId): AnyCtx | null {
