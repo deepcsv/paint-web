@@ -55,4 +55,26 @@ describe("PrimaryClient", () => {
       vi.useRealTimers();
     }
   });
+
+  it("allows long document replay work without weakening normal RPC failover", async () => {
+    vi.useFakeTimers();
+    try {
+      const primary = new PrimaryClient();
+      const stalled = new FakeSocket();
+      const replacement = new FakeSocket();
+      primary.setCandidate(stalled as unknown as WebSocket, true);
+      primary.setCandidate(replacement as unknown as WebSocket, true);
+
+      const request = primary.exec("document.replay", {});
+      const rejection = expect(request).rejects.toMatchObject({ code: -32002 });
+      await vi.advanceTimersByTimeAsync(primary.proxyTimeoutMs);
+      expect(primary.isPrimary(stalled as unknown as WebSocket)).toBe(true);
+      await vi.advanceTimersByTimeAsync(primary.longProxyTimeoutMs - primary.proxyTimeoutMs);
+      await rejection;
+
+      expect(primary.isPrimary(replacement as unknown as WebSocket)).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
