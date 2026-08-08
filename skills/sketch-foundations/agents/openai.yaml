@@ -1,0 +1,4 @@
+interface:
+  display_name: "Sketch Foundations"
+  short_description: "Build coherent, value-driven observational sketches"
+  default_prompt: "Use $sketch-foundations to plan, draw, and objectively validate a native-stroke graphite study."
