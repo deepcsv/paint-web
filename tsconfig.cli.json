@@ -5,7 +5,7 @@
     "moduleResolution": "NodeNext",
     "outDir": "dist-cli",
     "rootDir": ".",
-    "lib": ["ES2022"],
+    "lib": ["ES2024"],
     "types": ["node"]
   },
   "include": ["cli/**/*.ts", "shared/**/*.ts"],
