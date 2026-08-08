@@ -14,6 +14,13 @@ interface PendingExec {
   timer: ReturnType<typeof setTimeout>;
 }
 
+const LONG_RUNNING_METHODS = new Set([
+  "canvas.getState",
+  "document.replay",
+  "document.restoreRaster",
+  "draw.batch",
+]);
+
 /**
  * PrimaryClient — manages election of the "primary browser" (pixel authority)
  * and proxies pixel-level RPCs to it with method-aware timeouts.
@@ -82,10 +89,9 @@ export class PrimaryClient {
     const execId = String(requestId);
     const params: InternalExecParams = { origMethod, origParams, requestId };
 
-    const timeoutMs =
-      origMethod === "document.replay" || origMethod === "draw.batch"
-        ? this.longProxyTimeoutMs
-        : this.proxyTimeoutMs;
+    const timeoutMs = LONG_RUNNING_METHODS.has(origMethod)
+      ? this.longProxyTimeoutMs
+      : this.proxyTimeoutMs;
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pending.delete(execId);
