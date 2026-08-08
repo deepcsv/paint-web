@@ -481,7 +481,9 @@ const internalHandlers = new Map<string, (params: unknown) => Promise<unknown> |
 function wrapHandler<T>(name: string, fn: (p: T) => unknown): (p: unknown) => unknown {
   return (p: unknown) => {
     const params = p as { layerId?: string };
-    console.log(`[primary] exec ${name}`, params?.layerId ? `layer=${params.layerId}` : "(no layer)");
+    if (!name.startsWith("draw.")) {
+      console.log(`[primary] exec ${name}`, params?.layerId ? `layer=${params.layerId}` : "(no layer)");
+    }
     return fn(p as T);
   };
 }
@@ -544,6 +546,37 @@ internalHandlers.set("draw.setPixel", (p) => controller.setPixel(p as never));
 internalHandlers.set("draw.path", (p) => controller.path(p as never));
 internalHandlers.set("draw.gradient", (p) => controller.gradient(p as never));
 internalHandlers.set("draw.image", (p) => controller.image(p as never));
+internalHandlers.set("draw.batch", async (p) => {
+  const { operations } = p as { operations: { method: string; params: unknown }[] };
+  const results: ({ ok: true } | { code: number; message: string })[] = [];
+  await controller.withoutHistory(() =>
+    controller.withoutIntermediateRendering(async () => {
+      for (const [index, operation] of operations.entries()) {
+        const handler = operation.method === "draw.batch"
+          ? undefined
+          : internalHandlers.get(operation.method);
+        if (!handler) {
+          results.push({ code: -32601, message: `No handler for ${operation.method}` });
+        } else {
+          try {
+            await handler(operation.params);
+            results.push({ ok: true });
+          } catch (error) {
+            results.push({
+              code: -32603,
+              message: error instanceof Error ? error.message : String(error),
+            });
+          }
+        }
+        if ((index + 1) % 24 === 0) {
+          await new Promise<void>((resolve) => setTimeout(resolve, 0));
+        }
+      }
+    }),
+  );
+  refreshLayerPanel();
+  return { results };
+});
 internalHandlers.set("history.undo", (p) => controller.undo(p as never));
 internalHandlers.set("history.redo", (p) => controller.redo(p as never));
 internalHandlers.set("history.goto", (p) => controller.goto(p as never));
@@ -785,10 +818,26 @@ void wsClient.connect();
 // Apply events from other clients (for secondary browsers)
 // ---------------------------------------------------------------------------
 async function applyRemoteEvent(type: string, data: unknown): Promise<void> {
+  if (type === "draw.batched") {
+    const event = (data ?? {}) as {
+      method?: string;
+      params?: { operations?: { method: string; params: unknown }[] };
+      result?: { results?: ({ ok?: boolean } | unknown)[] };
+    };
+    const operations = event.params?.operations ?? [];
+    const results = event.result?.results ?? [];
+    const successful = operations.filter((_, index) => {
+      const result = results[index];
+      return Boolean(result && typeof result === "object" && (result as { ok?: boolean }).ok === true);
+    });
+    if (successful.length > 0) {
+      await internalHandlers.get("draw.batch")?.({ operations: successful });
+    }
+    return;
+  }
   if (
     type === "transaction.committed" ||
     type === "document.restored" ||
-    type === "draw.batched" ||
     type === "snapshot.loaded" ||
     type === "canvas.imported" ||
     type === "history.undone" ||
