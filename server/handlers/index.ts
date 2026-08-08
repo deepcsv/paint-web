@@ -412,24 +412,16 @@ export function registerHandlers(deps: HandlerDeps): void {
   router.register("draw.batch", async (params) => {
     const raw = (params as { operations: { method: string; params: unknown }[] }).operations;
     const operations = validateDrawBatchOperations(raw);
-    const results: unknown[] = [];
+    // Validate the complete payload before the renderer sees any mutation.
+    // The browser executes the validated batch under one history/render guard,
+    // avoiding one full-layer undo copy and one WS round-trip per stroke.
     for (const op of operations) {
-      try {
-        assertLayerTarget(op.params, op.method.startsWith("draw."));
-        if (op.method === "draw.image") {
-          assertAsset((op.params as { assetId: string }).assetId);
-        }
-        await primary.exec(op.method, op.params);
-        results.push({ ok: true });
-      } catch (err) {
-        results.push(
-          err instanceof RpcError
-            ? err.toObject()
-            : RpcError.internal(String(err)).toObject(),
-        );
+      assertLayerTarget(op.params, op.method.startsWith("draw."));
+      if (op.method === "draw.image") {
+        assertAsset((op.params as { assetId: string }).assetId);
       }
     }
-    return { results };
+    return primary.exec("draw.batch", { operations });
   });
 
   // -------------------------------------------------------------------------
