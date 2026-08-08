@@ -970,7 +970,14 @@ program
         stats.ok++;
       } catch (e) {
         stats.err++;
-        const msg = e && typeof e === "object" && "message" in e ? (e as { message: string }).message : String(e);
+        const rawMessage = e && typeof e === "object" && "message" in e
+          ? (e as { message: unknown }).message
+          : undefined;
+        const msg = typeof rawMessage === "string"
+          ? rawMessage
+          : e && typeof e === "object"
+            ? JSON.stringify(e)
+            : String(e);
         console.error(`[line ${i + 1}] ${op.method} failed: ${msg}`);
         if (cmdOpts.stopOnError) break;
       }
