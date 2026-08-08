@@ -77,4 +77,23 @@ describe("PrimaryClient", () => {
       vi.useRealTimers();
     }
   });
+
+  it("replaces a connected renderer that lacks a routed method", async () => {
+    const primary = new PrimaryClient();
+    const outdated = new FakeSocket();
+    const replacement = new FakeSocket();
+    primary.setCandidate(outdated as unknown as WebSocket, true);
+    primary.setCandidate(replacement as unknown as WebSocket, true);
+
+    const request = primary.exec("draw.batch", { operations: [] });
+    const sent = outdated.sent.at(-1) as { params: { requestId: string } };
+    primary.resolveExec(sent.params.requestId, undefined, {
+      code: -32601,
+      message: "No handler for draw.batch",
+    });
+
+    await expect(request).rejects.toMatchObject({ code: -32601 });
+    expect(primary.isPrimary(outdated as unknown as WebSocket)).toBe(false);
+    expect(primary.isPrimary(replacement as unknown as WebSocket)).toBe(true);
+  });
 });
