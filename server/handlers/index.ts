@@ -652,7 +652,12 @@ export function registerHandlers(deps: HandlerDeps): void {
     const { name } = params as { name: string };
     try {
       const target = documentStore.branchTarget(name);
-      await replayCommit(target);
+      // Creating a branch at HEAD and immediately switching to it requires no
+      // renderer work. Avoid exporting every full-resolution layer merely to
+      // replay the exact commit that is already on screen.
+      if (target !== documentStore.currentCommitId) {
+        await replayCommit(target);
+      }
       documentStore.applyBranchSwitch(name);
       return documentStore.restoreResult();
     } catch (error) {
