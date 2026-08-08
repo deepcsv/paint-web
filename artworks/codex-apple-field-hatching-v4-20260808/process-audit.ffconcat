@@ -1,0 +1,24 @@
+ffconcat version 1.0
+file 'stage-01-construction-calibrated.png'
+duration 1.2
+file 'rejected-stage-03-value-mass-v2.png'
+duration 1.2
+file 'stage-03-value-mass-calibrated.png'
+duration 1.2
+file 'qa-brush-size-calibration.png'
+duration 1.2
+file 'stage-03-oblique-value-mass.png'
+duration 1.4
+file 'stage-04-primary.png'
+duration 1.2
+file 'stage-04-primary-balanced.png'
+duration 1.4
+file 'stage-05-oblique-cross-raw.png'
+duration 1.2
+file 'stage-07-edges.png'
+duration 1.2
+file 'stage-07-neutral-edges.png'
+duration 1.4
+file 'apple-v4-final.png'
+duration 2.4
+file 'apple-v4-final.png'

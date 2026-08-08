@@ -1,0 +1,91 @@
+{
+  "title": "Apple V4 — continuous textured field-hatching study",
+  "canvas": {
+    "width": 900,
+    "height": 938
+  },
+  "deterministicSeeds": {
+    "appleField": "0xa9920208",
+    "shadowField": "0x05ad0208",
+    "edges": "0xed6e0208",
+    "lights": "0x11a70208"
+  },
+  "method": [
+    "asymmetric polar apple silhouette with top notch and unequal lobes",
+    "deformed ellipsoid height field with numerical surface normals",
+    "upper-left Lambertian key, dimple/contact occlusion and restrained reflected rim",
+    "midpoint-integrated, spatially rejected streamlines with tone-dependent spacing",
+    "coarse-to-fine massing, primary, cross and deep hatch families",
+    "selective contour hierarchy, tapered pressure and paper-coloured eraser strokes"
+  ],
+  "researchBorrowed": [
+    "Lu-Xu-Jia sketch/tone separation",
+    "Hertzmann coarse-to-fine curved strokes",
+    "Jobard-Lefer evenly spaced streamline placement",
+    "p5.brush vector-field and shape-clipped hatching concepts"
+  ],
+  "provenance": "No raster or generated image is imported. The apple, hatching, cast shadow, stem, edges and lights are all auditable native draw.stroke operations; paper is one draw.rect.",
+  "hatchLineCounts": {
+    "massing": 97,
+    "massingCross": 71,
+    "primary": 57,
+    "cross": 49,
+    "deep": 39
+  },
+  "shadowLineCounts": {
+    "shadow": 20,
+    "contact": 13
+  },
+  "targetSamples": {
+    "highlight": 0.035,
+    "light": 0.1268447724608051,
+    "halftone": 0.23404485242550654,
+    "coreShadow": 0.4850197342122477,
+    "reflectedRim": 0.6947764847805427,
+    "contact": 0.9
+  },
+  "crossingAngleStats": {
+    "primaryCross": {
+      "samples": 590,
+      "medianDegrees": 33.75820798717384,
+      "p95Degrees": 38.813265130634136,
+      "maxDegrees": 40.97337409633075
+    },
+    "primaryDeep": {
+      "samples": 183,
+      "medianDegrees": 26.35605857601787,
+      "p95Degrees": 26.356058576017872,
+      "maxDegrees": 26.35605857601788
+    },
+    "crossDeep": {
+      "samples": 183,
+      "medianDegrees": 57.976951218592056,
+      "p95Degrees": 65.8508796792505,
+      "maxDegrees": 67.32943267234862
+    }
+  },
+  "passCounts": {
+    "setup": 16,
+    "construction": 7,
+    "shadow": 85,
+    "mass": 168,
+    "primary": 158,
+    "cross": 137,
+    "deep": 74,
+    "edges": 84,
+    "lights": 40,
+    "finish": 2
+  },
+  "batchCounts": {
+    "shadow": 1,
+    "mass": 1,
+    "primary": 1,
+    "cross": 1,
+    "deep": 1,
+    "edges": 1,
+    "lights": 1
+  },
+  "generatedNativeStrokeCount": 753,
+  "acceptedVisibleNativeStrokeCount": 535,
+  "acceptanceNote": "The fine cross family passed the angle gate but was hidden after a warm-paper colour-shift review. The deep family was generated for auditability but not applied because it did not improve the form read."
+}

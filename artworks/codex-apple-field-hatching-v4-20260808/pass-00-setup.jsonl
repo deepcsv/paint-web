@@ -1,0 +1,16 @@
+{"method":"layer.create","params":{"layerId":"L_ap4_paper01","name":"APPLE V4 00 // FRESH PAPER"}}
+{"method":"draw.rect","params":{"layerId":"L_ap4_paper01","x":0,"y":0,"w":900,"h":938,"fill":"#f2eee4","stroke":"#f2eee4","strokeWidth":1}}
+{"method":"layer.create","params":{"layerId":"L_ap4_shadow01","name":"APPLE V4 01 // CAST SHADOW STREAMLINES"}}
+{"method":"layer.setBlendMode","params":{"layerId":"L_ap4_shadow01","blendMode":"multiply"}}
+{"method":"layer.create","params":{"layerId":"L_ap4_construct01","name":"APPLE V4 02 // LANDMARKS AND CROSS-CONTOURS"}}
+{"method":"layer.setBlendMode","params":{"layerId":"L_ap4_construct01","blendMode":"multiply"}}
+{"method":"layer.setOpacity","params":{"layerId":"L_ap4_construct01","opacity":0.44}}
+{"method":"layer.create","params":{"layerId":"L_ap4_mass01","name":"APPLE V4 03 // COARSE VALUE MASS"}}
+{"method":"layer.setBlendMode","params":{"layerId":"L_ap4_mass01","blendMode":"multiply"}}
+{"method":"layer.create","params":{"layerId":"L_ap4_primary01","name":"APPLE V4 04 // EVEN PRIMARY STREAMLINES"}}
+{"method":"layer.setBlendMode","params":{"layerId":"L_ap4_primary01","blendMode":"multiply"}}
+{"method":"layer.create","params":{"layerId":"L_ap4_cross01","name":"APPLE V4 05 // VALUE-GATED CROSSHATCH"}}
+{"method":"layer.setBlendMode","params":{"layerId":"L_ap4_cross01","blendMode":"multiply"}}
+{"method":"layer.create","params":{"layerId":"L_ap4_edges02","name":"APPLE V4 06 // EDGE HIERARCHY AND STEM"}}
+{"method":"layer.setBlendMode","params":{"layerId":"L_ap4_edges02","blendMode":"multiply"}}
+{"method":"layer.create","params":{"layerId":"L_ap4_lights02","name":"APPLE V4 07 // ERASER LIGHTS"}}

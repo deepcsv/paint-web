@@ -1,0 +1,4 @@
+{"method":"layer.setVisible","params":{"layerId":"L_ap4_edges01","visible":false}}
+{"method":"layer.create","params":{"layerId":"L_ap4_edges02","name":"APPLE V4 06B // NEUTRAL TRADITIONAL-PENCIL EDGES"}}
+{"method":"layer.setBlendMode","params":{"layerId":"L_ap4_edges02","blendMode":"multiply"}}
+{"method":"layer.create","params":{"layerId":"L_ap4_lights02","name":"APPLE V4 07B // NEUTRAL PAPER LIFTS"}}
