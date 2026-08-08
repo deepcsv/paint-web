@@ -16,7 +16,7 @@ interface PendingExec {
 
 /**
  * PrimaryClient — manages election of the "primary browser" (pixel authority)
- * and proxies pixel-level RPCs to it with a 15s timeout.
+ * and proxies pixel-level RPCs to it with method-aware timeouts.
  *
  * Each browser connection tags itself as a candidate via sync.hello.
  * First connected browser is primary. On primary disconnect, the next
@@ -27,6 +27,7 @@ export class PrimaryClient {
   private candidates: WebSocket[] = []; // in promotion order
   private pending: Map<string, PendingExec> = new Map();
   readonly proxyTimeoutMs = 15_000;
+  readonly longProxyTimeoutMs = 120_000;
   /** Consecutive timeouts from current primary. Reset on success. */
   private consecutiveTimeouts = 0;
   /** Max consecutive timeouts before eviction. 1 = immediate on first timeout. */
@@ -81,6 +82,10 @@ export class PrimaryClient {
     const execId = String(requestId);
     const params: InternalExecParams = { origMethod, origParams, requestId };
 
+    const timeoutMs =
+      origMethod === "document.replay" || origMethod === "draw.batch"
+        ? this.longProxyTimeoutMs
+        : this.proxyTimeoutMs;
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pending.delete(execId);
@@ -91,7 +96,7 @@ export class PrimaryClient {
           this.evictPrimary(timeoutError);
         }
         reject(timeoutError);
-      }, this.proxyTimeoutMs);
+      }, timeoutMs);
 
       this.pending.set(execId, { resolve, reject, timer });
 
