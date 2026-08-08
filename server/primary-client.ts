@@ -133,8 +133,21 @@ export class PrimaryClient {
     this.pending.delete(execId);
     // Reset timeout counter on any response (even errors)
     this.consecutiveTimeouts = 0;
-    if (error !== undefined) p.reject(error);
-    else p.resolve(result);
+    if (error !== undefined) {
+      // A connected browser that does not implement a server-routed method is
+      // an outdated renderer (commonly a stale pre-HMR socket). Promote the
+      // next candidate instead of letting the legacy client block new APIs.
+      if (
+        typeof error === "object"
+        && error !== null
+        && (error as { code?: number }).code === -32601
+      ) {
+        this.evictPrimary(error);
+      }
+      p.reject(error);
+    } else {
+      p.resolve(result);
+    }
   }
 
   /** Request a snapshot PNG from the primary. */
