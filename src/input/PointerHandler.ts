@@ -7,8 +7,8 @@ export interface PointerHandlerOptions {
   /** Native canvas width (for scaling display coords → canvas coords). */
   canvasWidth: number;
   canvasHeight: number;
-  onStrokeStart: (point: { x: number; y: number; pressure: number }) => void;
-  onStrokeSegment: (point: { x: number; y: number; pressure: number }) => void;
+  onStrokeStart: (point: { x: number; y: number; pressure?: number }) => void;
+  onStrokeSegment: (point: { x: number; y: number; pressure?: number }) => void;
   onStrokeEnd: () => void;
   onClick: (point: { x: number; y: number; pressure: number }) => void;
   onMove: (point: { x: number; y: number }) => void;
@@ -84,7 +84,7 @@ export class PointerHandler {
     this.opts.onStrokeEnd();
   };
 
-  private toCanvasCoord(e: PointerEvent): { x: number; y: number; pressure: number } {
+  private toCanvasCoord(e: PointerEvent): { x: number; y: number; pressure?: number } {
     const rect = this.opts.canvas.getBoundingClientRect();
     const displayX = e.clientX - rect.left;
     const displayY = e.clientY - rect.top;
@@ -92,7 +92,9 @@ export class PointerHandler {
     const scaleY = this.opts.canvasHeight / rect.height;
     const x = (displayX * scaleX) | 0;
     const y = (displayY * scaleY) | 0;
-    const pressure = e.pressure && e.pressure > 0 ? e.pressure : 0.5;
-    return { x, y, pressure };
+    // Mouse events report a synthetic constant pressure. Leaving it undefined
+    // lets the stroke planner infer expressive pressure from pointer velocity.
+    const pressure = e.pointerType !== "mouse" && e.pressure > 0 ? e.pressure : undefined;
+    return pressure === undefined ? { x, y } : { x, y, pressure };
   }
 }

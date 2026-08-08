@@ -3,13 +3,17 @@ import { CanvasController } from "./canvas/CanvasController.js";
 import { PointerHandler, type Tool } from "./input/PointerHandler.js";
 import { Toolbar } from "./ui/Toolbar.js";
 import { ColorPicker } from "./ui/ColorPicker.js";
+import { BrushPanel } from "./ui/BrushPanel.js";
+import { preloadTextures, getTexture } from "./brush/TextureLoader.js";
+import type { BrushPreset } from "./brush/BrushTypes.js";
+import { renderStrokeLive } from "./canvas/StampEngine.js";
 import { SizeSlider } from "./ui/SizeSlider.js";
 import { LayerPanel } from "./ui/LayerPanel.js";
 import { StatusBar } from "./ui/StatusBar.js";
 import type {
   DocumentReplaySnapshot,
   DocumentStateSnapshot,
-  DrawStrokeParams,
+  DrawStrokeInput,
 } from "../shared/protocol.js";
 
 const CLIENT_ID_KEY = "paint-web.clientId";
@@ -35,6 +39,24 @@ const canvas = document.getElementById("canvas") as HTMLCanvasElement;
 const toolbar = new Toolbar(document.getElementById("toolbar")!);
 const colorPicker = new ColorPicker(document.getElementById("color-picker")!);
 const sizeSlider = new SizeSlider(document.getElementById("size-slider")!);
+const brushPanel = new BrushPanel(document.getElementById("brush-panel")!);
+
+// Active brush preset — BrushPanel initializes this to the pencil preset.
+let activeBrushPreset: BrushPreset | null = null;
+
+function createStrokeSeed(): number {
+  const value = new Uint32Array(1);
+  crypto.getRandomValues(value);
+  return value[0]!;
+}
+
+// Brush panel selection
+brushPanel.onChange((preset) => {
+  activeBrushPreset = preset;
+  const textureNames = [preset.shapeTexture, preset.surfaceTexture].filter(Boolean);
+  if (textureNames.length > 0) void preloadTextures(textureNames);
+  console.log("[brush] selected:", preset.name, "id:", preset.id);
+});
 const layerPanel = new LayerPanel(document.getElementById("layer-panel")!);
 const statusBar = new StatusBar(document.getElementById("status-bar")!);
 const actions = document.getElementById("actions")!;
@@ -86,8 +108,10 @@ interface PendingStroke {
   color: string;
   size: number;
   opacity: number;
-  points: { x: number; y: number; pressure: number }[];
+  points: { x: number; y: number; pressure?: number }[];
   layerId: string | null;
+  brush: BrushPreset | null;
+  seed: number;
 }
 
 let pendingStroke: PendingStroke | null = null;
@@ -173,6 +197,24 @@ function drawShapePreview(tool: "line" | "rect" | "circle" | "ellipse", a: { x: 
 function drawStrokePreview(stroke: PendingStroke): void {
   clearOverlay();
   if (stroke.points.length === 0) return;
+
+  // If a brush preset is active, use the stamp engine for live preview.
+  // This gives a true representation of what the committed stroke will look like.
+  if (stroke.brush) {
+    const preset = stroke.brush;
+    const textures: { shape?: ImageBitmap; surface?: ImageBitmap } = {};
+    if (preset.shapeTexture) textures.shape = getTexture(preset.shapeTexture);
+    if (preset.surfaceTexture) textures.surface = getTexture(preset.surfaceTexture);
+    const sizeMult = stroke.size / Math.max(preset.width, 1);
+    renderStrokeLive(overlayCtx, preset, stroke.points, stroke.color, textures, sizeMult, {
+      forceEraser: stroke.tool === "eraser",
+      opacityOverride: stroke.opacity,
+      seed: stroke.seed,
+    });
+    return;
+  }
+
+  // Fallback: simple line preview when no preset is selected
   overlayCtx.save();
   overlayCtx.globalAlpha = stroke.tool === "eraser" ? 0.7 : stroke.opacity;
   overlayCtx.strokeStyle = stroke.tool === "eraser" ? "#ffffff" : stroke.color;
@@ -277,6 +319,8 @@ const pointer = new PointerHandler({
       opacity: 1,
       points: [p],
       layerId,
+      brush: activeBrushPreset,
+      seed: createStrokeSeed(),
     };
   },
   onStrokeSegment: (p) => {
@@ -367,13 +411,20 @@ const pointer = new PointerHandler({
     if (pendingStroke) {
       clearOverlay();
       const pts = pendingStroke.points;
-      const params: DrawStrokeParams = {
+      const params: DrawStrokeInput = {
         layerId: pendingStroke.layerId!,
         tool: pendingStroke.tool,
         color: pendingStroke.color,
         size: pendingStroke.size,
         opacity: pendingStroke.opacity,
         points: pts,
+        seed: pendingStroke.seed,
+        strokeVersion: 2,
+        // Store an immutable brush snapshot so future preset tuning cannot
+        // change the pixels produced by replaying this operation.
+        ...(pendingStroke.brush
+          ? { brushPresetId: pendingStroke.brush.id, brush: pendingStroke.brush }
+          : {}),
       };
       void wsClient.request("draw.stroke", params).catch(console.warn);
       pendingStroke = null;
@@ -383,13 +434,6 @@ const pointer = new PointerHandler({
   onMove: (p) => {
     statusBar.setPos(p.x, p.y);
   },
-});
-
-// Allow shape tools to use start + current pos
-canvas.addEventListener("pointermove", (e: PointerEvent) => {
-  if (!shapeStart) return;
-  // Live preview of shape (TODO: draw to a temp overlay). For v1, no preview.
-  void e;
 });
 
 // ---------------------------------------------------------------------------

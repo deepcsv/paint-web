@@ -1,10 +1,13 @@
 import { LayerStack } from "./LayerStack.js";
 import { HistoryStack } from "./HistoryStack.js";
 import { StrokeEngine } from "./StrokeEngine.js";
+import { renderStroke as renderStampStroke } from "./StampEngine.js";
 import { ShapeRenderer } from "./ShapeRenderer.js";
 import { floodFill } from "./FillEngine.js";
 import { FilterEngine } from "./FilterEngine.js";
 import { analyzePixels, samplePixels } from "./CanvasAnalyzer.js";
+import { getById as getPresetById } from "../brush/BrushPresets.js";
+import { getTexture } from "../brush/TextureLoader.js";
 import type {
   CanvasAnalyzeParams,
   CanvasAnalyzeResult,
@@ -308,19 +311,29 @@ export class CanvasController {
     this.snapshotForUndo(params.layerId);
     const ctx = this.getCtx(params.layerId);
     if (!ctx) return;
-    StrokeEngine.drawStroke(
-      ctx,
-      {
-        tool: params.tool,
-        color: params.color,
-        size: params.size,
-        opacity: params.opacity,
-      },
-      params.points,
-    );
+
+    // Embedded brush snapshots make replay independent of future preset edits.
+    // ID-only operations remain supported for v1 documents and compact clients.
+    if (params.brush || params.brushPresetId) {
+      const preset = params.brush ?? getPresetById(params.brushPresetId!);
+      const textures: { shape?: ImageBitmap; surface?: ImageBitmap } = {};
+      if (preset.shapeTexture) textures.shape = getTexture(preset.shapeTexture);
+      if (preset.surfaceTexture) textures.surface = getTexture(preset.surfaceTexture);
+      const sizeMult = params.size / Math.max(preset.width, 1);
+      renderStampStroke(ctx, preset, params.points, params.color, textures, sizeMult, {
+        forceEraser: params.tool === "eraser",
+        opacityOverride: params.opacity,
+        seed: params.seed,
+        smearSource: Math.abs(preset.smearStrength) > 0.001 ? ctx : undefined,
+      });
+    } else {
+      StrokeEngine.drawStroke(
+        ctx,
+        { tool: params.tool, color: params.color, size: params.size, opacity: params.opacity },
+        params.points,
+      );
+    }
     this.requestRender();
-    // No onAfterChange: pixel-only ops don't affect layer metadata,
-    // and triggering UI refresh causes flex reflow → canvas flicker.
   }
 
   line(params: DrawLineParams): void {

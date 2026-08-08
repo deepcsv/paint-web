@@ -33,7 +33,27 @@ describe("protocol schemas", () => {
     if (r.success) {
       expect(r.data.opacity).toBe(1); // default
       expect(r.data.points.length).toBe(2);
+      expect(r.data.strokeVersion).toBe(2);
+      expect(r.data.seed).toBeTypeOf("number");
     }
+  });
+
+  it("derives stable stroke seeds and preserves explicit seeds", () => {
+    const input = {
+      layerId: "L_seed",
+      tool: "brush" as const,
+      color: "#222222",
+      size: 6,
+      points: [{ x: 1, y: 2 }, { x: 10, y: 12 }],
+    };
+    const first = DrawStrokeParams.parse(input);
+    const second = DrawStrokeParams.parse(input);
+    const changed = DrawStrokeParams.parse({ ...input, points: [{ x: 1, y: 2 }, { x: 11, y: 12 }] });
+    const explicit = DrawStrokeParams.parse({ ...input, seed: 42 });
+
+    expect(first.seed).toBe(second.seed);
+    expect(changed.seed).not.toBe(first.seed);
+    expect(explicit.seed).toBe(42);
   });
 
   it("DrawStrokeParams rejects invalid tool", () => {

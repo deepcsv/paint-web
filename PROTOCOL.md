@@ -123,7 +123,7 @@ Server disconnects after 60s of silence.
 
 | Method | Params | Notes |
 |---|---|---|
-| `draw.stroke` | `{ layerId, tool: "brush"\|"eraser", color, size, opacity, points }` | Bezier-smoothed freehand; points ≥ 1 |
+| `draw.stroke` | `{ layerId, tool, color, size, opacity, points, seed?, strokeVersion?, brushPresetId?, brush? }` | Deterministic pressure-aware centerline + legacy or immutable stamp brush; points ≥ 1 |
 | `draw.line` | `{ layerId, from, to, color, size, opacity, dash? }` | Straight line |
 | `draw.rect` | `{ layerId, x, y, w, h, stroke?, fill?, strokeWidth }` | Rectangle |
 | `draw.circle` | `{ layerId, cx, cy, r, stroke?, fill?, strokeWidth }` | Circle |
@@ -138,7 +138,16 @@ Server disconnects after 60s of silence.
 
 Color format: `#rrggbb` or `#rrggbbaa` (8-digit with alpha). No 3-digit shorthand.
 
-Point format: `{ x: number, y: number, pressure?: 0..1 }`. `pressure` defaults to 0.5; mapped to `size * (0.3 + 0.7 * pressure)`.
+Point format: `{ x: number, y: number, pressure?: 0..1 }`. Explicit tablet
+pressure is preserved. When omitted, stamp brushes derive a restrained,
+deterministic pressure curve from path spacing; legacy strokes retain their
+original behavior.
+
+New validated strokes always carry `strokeVersion: 2` and an unsigned 32-bit
+`seed`. A missing seed is deterministically derived from the stroke input.
+First-party UI/CLI brush strokes include both `brushPresetId` and the complete
+immutable `brush` rendering snapshot. This makes operation replay independent
+of later edits to the named preset; old ID-only operations remain supported.
 
 Path commands are `{op:"M"|"L",x,y}`, `{op:"Q",cx,cy,x,y}`,
 `{op:"C",c1x,c1y,c2x,c2y,x,y}`, and `{op:"Z"}`. Gradient definitions
