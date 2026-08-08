@@ -633,18 +633,26 @@ internalHandlers.set("document.replay", async (params) => {
   const snapshot = params as DocumentReplaySnapshot;
   if (!snapshot.replayable) throw new Error("Document has no captured pixel baseline");
   const warnings: string[] = [];
-  await controller.withoutHistory(async () => {
-    await restoreRasterState(snapshot.baseState, snapshot.baseRaster);
-    for (const operation of snapshot.operations) {
-      const handler = internalHandlers.get(operation.method);
-      if (!handler || operation.method.startsWith("document.")) {
-        warnings.push(`Skipped unsupported replay operation: ${operation.method}`);
-        continue;
+  await controller.withoutHistory(() =>
+    controller.withoutIntermediateRendering(async () => {
+      await restoreRasterState(snapshot.baseState, snapshot.baseRaster);
+      for (const [index, operation] of snapshot.operations.entries()) {
+        const handler = internalHandlers.get(operation.method);
+        if (!handler || operation.method.startsWith("document.")) {
+          warnings.push(`Skipped unsupported replay operation: ${operation.method}`);
+          continue;
+        }
+        await handler(operation.params);
+        // Large native-brush documents can contain thousands of operations.
+        // Yield periodically so WebSocket heartbeats and browser watchdogs stay
+        // responsive while retaining a single final composite.
+        if ((index + 1) % 24 === 0) {
+          await new Promise<void>((resolve) => setTimeout(resolve, 0));
+        }
       }
-      await handler(operation.params);
-    }
-    controller.reconcileFromServer(snapshot.state.layers, snapshot.state.activeLayerId);
-  });
+      controller.reconcileFromServer(snapshot.state.layers, snapshot.state.activeLayerId);
+    }),
+  );
   controller.clearHistory();
   controller.triggerRender();
   refreshLayerPanel();

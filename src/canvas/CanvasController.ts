@@ -48,6 +48,7 @@ export class CanvasController {
   readonly renderCanvas: HTMLCanvasElement;
   private renderCtx: CanvasRenderingContext2D;
   private renderScheduled = false;
+  private renderSuspendDepth = 0;
   private historyEnabled = true;
   private onAfterChange?: () => void;
 
@@ -68,10 +69,12 @@ export class CanvasController {
   }
 
   private requestRender(): void {
+    if (this.renderSuspendDepth > 0) return;
     if (this.renderScheduled) return;
     this.renderScheduled = true;
     requestAnimationFrame(() => {
       this.renderScheduled = false;
+      if (this.renderSuspendDepth > 0) return;
       this.layers.composite(this.renderCtx);
     });
   }
@@ -110,6 +113,17 @@ export class CanvasController {
       return await operation();
     } finally {
       this.historyEnabled = previouslyEnabled;
+    }
+  }
+
+  /** Defer expensive full-layer compositing until a mutation batch is done. */
+  async withoutIntermediateRendering<T>(operation: () => T | Promise<T>): Promise<T> {
+    this.renderSuspendDepth += 1;
+    try {
+      return await operation();
+    } finally {
+      this.renderSuspendDepth -= 1;
+      if (this.renderSuspendDepth === 0) this.requestRender();
     }
   }
 
