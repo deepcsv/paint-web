@@ -269,6 +269,33 @@ maybeDescribe("P1: determinism", () => {
 // ════════════════════════════════════════════════════════════════════════
 
 maybeDescribe("v7: Canvas-native premultiplied compositing", () => {
+  it("preserves the selected hue when a shipped brush disables depth", () => {
+    const { ctx } = makeCanvas(180, 100);
+    const pencil = getByNameOrId("铅笔");
+    expect(pencil.depth).toBe(0);
+
+    renderStroke(
+      ctx,
+      pencil,
+      [{ x: 30, y: 50, pressure: 1 }, { x: 150, y: 50, pressure: 1 }],
+      "#43423f",
+      {},
+      2,
+      { seed: 19 },
+    );
+
+    const pixels = ctx.getImageData(0, 0, 180, 100).data;
+    let strongest = 0;
+    for (let i = 4; i < pixels.length; i += 4) {
+      if (pixels[i + 3]! > pixels[strongest + 3]!) strongest = i;
+    }
+
+    expect(pixels[strongest + 3]).toBeGreaterThan(20);
+    expect(Math.abs(pixels[strongest]! - 0x43)).toBeLessThanOrEqual(5);
+    expect(Math.abs(pixels[strongest + 1]! - 0x42)).toBeLessThanOrEqual(5);
+    expect(Math.abs(pixels[strongest + 2]! - 0x3f)).toBeLessThanOrEqual(5);
+  });
+
   it("preserves straight RGB hue at a translucent soft edge", () => {
     const { ctx } = makeCanvas(120, 120);
     const brush: BrushPreset = {
