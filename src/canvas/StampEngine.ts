@@ -1,12 +1,13 @@
 /**
- * StampEngine v6 — deterministic stamp-based brush renderer.
+ * StampEngine v7 — deterministic, production stamp-based brush renderer.
  *
- * v6 foundations:
+ * v7 guarantees:
  *   - Module-level cached buffers (no allocation per stroke/pointermove)
  *   - perfect-freehand centerline streamlining and velocity pressure
  *   - Explicit per-stroke PRNG seeds for replayable jitter
- *   - Dark-mask rgbToAlpha semantics and procedural graphite grain
- *   - Isolated smear source buffer and blend-mode-aware compositing
+ *   - Canvas-native premultiplied-alpha compositing without pixel readback
+ *   - Per-stamp smear feedback over the base layer plus prior stroke output
+ *   - Semantic procedural tips with versioned, parameter-complete caching
  */
 
 import type { BrushPreset, StrokePoint, StampPoint } from "../brush/BrushTypes.js";
@@ -73,11 +74,16 @@ let _maskCtx: OffscreenCanvasRenderingContext2D | null = null;
 let _maskBufSize = 0;
 let _smearBuf: OffscreenCanvas | null = null;
 let _smearCtx: OffscreenCanvasRenderingContext2D | null = null;
+let _smearSampleBuf: OffscreenCanvas | null = null;
+let _smearSampleCtx: OffscreenCanvasRenderingContext2D | null = null;
+let _smearSampleBufSize = 0;
 
 function getStrokeBuffer(w: number, h: number): OffscreenCanvasRenderingContext2D {
   if (!_strokeBuf || _strokeBuf.width < w || _strokeBuf.height < h) {
     _strokeBuf = new OffscreenCanvas(w, h);
-    _strokeCtx = _strokeBuf.getContext("2d", { willReadFrequently: true })!;
+    // This buffer stays entirely on the drawImage/compositing path. Keeping it
+    // GPU-friendly is important for dense, low-spacing brushes.
+    _strokeCtx = _strokeBuf.getContext("2d")!;
   }
   const ctx = _strokeCtx!;
   ctx.clearRect(0, 0, _strokeBuf.width, _strokeBuf.height);
@@ -127,6 +133,50 @@ function captureSmearSource(source: AnyCtx, width: number, height: number): Offs
   return _smearBuf;
 }
 
+function getSmearSampleBuffer(size: number): OffscreenCanvasRenderingContext2D {
+  if (!_smearSampleBuf || _smearSampleBufSize < size) {
+    _smearSampleBufSize = Math.max(size, 256);
+    _smearSampleBuf = new OffscreenCanvas(_smearSampleBufSize, _smearSampleBufSize);
+    _smearSampleCtx = _smearSampleBuf.getContext("2d")!;
+  }
+  const ctx = _smearSampleCtx!;
+  // Only the top-left sampleSize square is read below; do not clear a previous
+  // 512px pickup allocation for every later 10px dab.
+  ctx.clearRect(0, 0, size, size);
+  ctx.globalCompositeOperation = "source-over";
+  ctx.globalAlpha = 1;
+  ctx.imageSmoothingEnabled = true;
+  return ctx;
+}
+
+/** Draw a clipped 1:1 canvas region without stretching out-of-bounds pixels. */
+function drawCanvasRegion(
+  destination: OffscreenCanvasRenderingContext2D,
+  source: OffscreenCanvas,
+  sourceX: number,
+  sourceY: number,
+  width: number,
+  height: number,
+): void {
+  const left = Math.max(0, sourceX);
+  const top = Math.max(0, sourceY);
+  const right = Math.min(source.width, sourceX + width);
+  const bottom = Math.min(source.height, sourceY + height);
+  if (right <= left || bottom <= top) return;
+
+  destination.drawImage(
+    source,
+    left,
+    top,
+    right - left,
+    bottom - top,
+    left - sourceX,
+    top - sourceY,
+    right - left,
+    bottom - top,
+  );
+}
+
 // ── Procedural textures ──────────────────────────────────────────────────
 
 const procTexCache = new Map<string, OffscreenCanvas>();
@@ -152,54 +202,218 @@ function cacheProceduralShape(key: string, texture: OffscreenCanvas): void {
   }
 }
 
-function generateProceduralShape(preset: BrushPreset, size: number): OffscreenCanvas {
+export type ProceduralBrushKind = "spray" | "directional" | "charcoal" | "watercolor" | "round";
+
+const PROCEDURAL_TEXTURE_VERSION = "v7.1";
+
+function containsAny(value: string, terms: readonly string[]): boolean {
+  return terms.some((term) => value.includes(term));
+}
+
+/**
+ * Classify a missing brush-tip asset from all available semantic and numeric
+ * signals. Explicit semantic names win over broad parameter heuristics so a
+ * widely-spaced watercolor or charcoal preset cannot silently become spray.
+ */
+export function classifyProceduralBrush(preset: BrushPreset): ProceduralBrushKind {
+  const identity = [
+    preset.name,
+    preset.pkgName,
+    preset.shapeTexture,
+    preset.surfaceTexture,
+  ].join(" ").toLowerCase();
+
+  if (containsAny(identity, ["water", "aquarelle", "水彩", "水粉", "suicai"])) return "watercolor";
+  if (containsAny(identity, ["charcoal", "graphite", "pencil", "炭", "碳", "木炭", "石墨", "铅笔"])) return "charcoal";
+  if (containsAny(identity, ["spray", "airbrush", "aerosol", "喷枪", "喷笔", "喷雾", "喷绘"])) return "spray";
+  if (containsAny(identity, ["marker", "bristle", "chisel", "flat brush", "马克", "刷毛", "毛刷", "排刷", "扁笔"])) return "directional";
+
+  const isSoft = preset.hardness < 0.5;
+  if (preset.spacing > 0.2 || (isSoft && preset.spacing > 0.15)) return "spray";
+  if (preset.roundness < 0.85) return "directional";
+  if (preset.spacing < 0.08 && preset.useTex && !isSoft) return "charcoal";
+  if (isSoft) return "watercolor";
+  return "round";
+}
+
+function proceduralShapeKey(preset: BrushPreset, kind: ProceduralBrushKind, size: number): string {
+  return [
+    PROCEDURAL_TEXTURE_VERSION,
+    size,
+    preset.id,
+    kind,
+    preset.name,
+    preset.pkgName,
+    preset.shapeTexture,
+    preset.surfaceTexture,
+    preset.spacing.toFixed(5),
+    preset.hardness.toFixed(5),
+    preset.roundness.toFixed(5),
+    preset.useTex ? 1 : 0,
+  ].join("|");
+}
+
+function sampleGaussian2D(rng: () => number): [number, number] {
+  const u1 = Math.max(rng(), Number.EPSILON);
+  const u2 = rng();
+  const magnitude = Math.sqrt(-2 * Math.log(u1));
+  const angle = Math.PI * 2 * u2;
+  return [magnitude * Math.cos(angle), magnitude * Math.sin(angle)];
+}
+
+function generateProceduralShape(
+  preset: BrushPreset,
+  size: number,
+  kind: ProceduralBrushKind,
+  seedKey: string,
+): OffscreenCanvas {
   const c = new OffscreenCanvas(size, size);
   const ctx = c.getContext("2d")!;
   const cx = size / 2;
   const r = size / 2;
-  const rng = mulberry32(hashStr(preset.id + ":" + Math.round(size)));
+  const rng = mulberry32(hashStr(seedKey));
 
-  if (preset.hardness < 0.5) {
+  if (kind === "spray") {
+    // ── Spray/airbrush: truncated 2D Gaussian particle field ──────────
+    const count = Math.round(clamp(size * size * 0.065, 48, 18_000));
+    const sigma = r * 0.36;
     ctx.fillStyle = "rgba(255,255,255,1)";
-    for (let i = 0; i < size * size * 0.15; i++) {
-      const a = rng() * Math.PI * 2;
-      const dist = rng() * r;
-      ctx.globalAlpha = rng() * 0.8;
+    for (let i = 0; i < count; i++) {
+      let x = 0;
+      let y = 0;
+      let dist = 0;
+      for (let attempt = 0; attempt < 8; attempt++) {
+        const [gx, gy] = sampleGaussian2D(rng);
+        x = gx * sigma;
+        y = gy * sigma;
+        dist = Math.hypot(x, y);
+        if (dist <= r * 0.97) break;
+      }
+      if (dist > r * 0.97) {
+        const scale = (r * 0.97) / dist;
+        x *= scale;
+        y *= scale;
+        dist = r * 0.97;
+      }
+      const dotR = Math.max(0.3, size * (0.003 + rng() * 0.012));
+      const edgeWeight = clamp(1 - dist / r, 0, 1);
+      ctx.globalAlpha = (0.2 + rng() * 0.7) * (0.35 + edgeWeight * 0.65);
       ctx.beginPath();
-      ctx.arc(cx + Math.cos(a)*dist, cx + Math.sin(a)*dist, Math.max(0.5, rng()*2), 0, Math.PI*2);
+      ctx.arc(cx + x, cx + y, dotR, 0, Math.PI * 2);
       ctx.fill();
     }
-  } else if (preset.roundness < 0.8) {
-    ctx.strokeStyle = "rgba(255,255,255,0.8)";
-    ctx.lineWidth = 1;
-    for (let i = 0; i < 24; i++) {
-      const a = (i / 24) * Math.PI * 2;
-      ctx.globalAlpha = 0.3 + rng() * 0.5;
+  } else if (kind === "directional") {
+    // ── Directional/bristle: coherent fibers in the local X axis ──────
+    // The whole tip is rotated later with the stroke; fibers must therefore
+    // be parallel here rather than radiating from the center.
+    ctx.fillStyle = "rgba(255,255,255,1)";
+    ctx.globalAlpha = 0.06;
+    ctx.beginPath();
+    ctx.ellipse(cx, cx, r * 0.94, r * 0.84, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    const fiberCount = Math.max(10, Math.round(size * 0.42));
+    ctx.strokeStyle = "rgba(255,255,255,1)";
+    ctx.lineCap = "round";
+    for (let i = 0; i < fiberCount; i++) {
+      const normalizedY = -0.82 + ((i + 0.5) / fiberCount) * 1.64;
+      const y = normalizedY * r + (rng() * 2 - 1) * size * 0.008;
+      const halfSpan = r * 0.92 * Math.sqrt(Math.max(0, 1 - normalizedY * normalizedY));
+      const inset = r * (0.01 + rng() * 0.08);
+      const bend = (rng() * 2 - 1) * size * 0.025;
+      ctx.lineWidth = Math.max(0.45, size * (0.005 + rng() * 0.007));
+      ctx.globalAlpha = 0.42 + rng() * 0.5;
       ctx.beginPath();
-      ctx.moveTo(cx + Math.cos(a)*r*0.2, cx + Math.sin(a)*r*0.2);
-      ctx.lineTo(cx + Math.cos(a)*r, cx + Math.sin(a)*r);
+      ctx.moveTo(cx - halfSpan + inset, cx + y);
+      ctx.quadraticCurveTo(cx, cx + y + bend, cx + halfSpan - inset, cx + y - bend * 0.35);
       ctx.stroke();
     }
+  } else if (kind === "charcoal") {
+    // ── Charcoal/graphite texture: chunky irregular particles ─────────
+    ctx.fillStyle = "rgba(255,255,255,1)";
+    const count = Math.round(clamp(size * size * 0.09, 48, 20_000));
+    for (let i = 0; i < count; i++) {
+      const angle = rng() * Math.PI * 2;
+      const dist = Math.sqrt(rng()) * r * 0.94;
+      const px = cx + Math.cos(angle) * dist;
+      const py = cx + Math.sin(angle) * dist;
+      const longRadius = Math.max(0.5, size * (0.004 + rng() * 0.026));
+      const shortRadius = Math.max(0.3, longRadius * (0.28 + rng() * 0.55));
+      ctx.globalAlpha = clamp(0.18 + (1 - dist / r) * 0.65 + rng() * 0.18, 0.12, 0.96);
+      ctx.beginPath();
+      ctx.ellipse(px, py, longRadius, shortRadius, rng() * Math.PI, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  } else if (kind === "watercolor") {
+    // ── Watercolor texture: organic irregular blob with wet edges ─────
+    ctx.fillStyle = "rgba(255,255,255,1)";
+    const phaseA = rng() * Math.PI * 2;
+    const phaseB = rng() * Math.PI * 2;
+    const phaseC = rng() * Math.PI * 2;
+    ctx.beginPath();
+    const points = 48;
+    for (let i = 0; i <= points; i++) {
+      const angle = (i / points) * Math.PI * 2;
+      const radiusNoise = r * (
+        0.79
+        + Math.sin(angle * 2 + phaseA) * 0.075
+        + Math.sin(angle * 3 + phaseB) * 0.05
+        + Math.sin(angle * 5 + phaseC) * 0.025
+        + (rng() * 2 - 1) * 0.012
+      );
+      const px = cx + Math.cos(angle) * radiusNoise;
+      const py = cx + Math.sin(angle) * radiusNoise;
+      if (i === 0) ctx.moveTo(px, py);
+      else ctx.lineTo(px, py);
+    }
+    ctx.closePath();
+    ctx.globalAlpha = 0.82;
+    ctx.fill();
+    ctx.globalAlpha = 0.48;
+    ctx.lineWidth = Math.max(0.8, size * 0.025);
+    ctx.strokeStyle = "rgba(255,255,255,1)";
+    ctx.stroke();
+
+    // Granulation removes translucent pools while preserving the low-frequency
+    // boundary, avoiding independent random spikes around the silhouette.
+    ctx.globalCompositeOperation = "destination-out";
+    const grainCount = Math.round(clamp(size * 1.1, 24, 900));
+    for (let i = 0; i < grainCount; i++) {
+      const angle = rng() * Math.PI * 2;
+      const dist = Math.sqrt(rng()) * r * 0.78;
+      ctx.globalAlpha = 0.08 + rng() * 0.3;
+      ctx.beginPath();
+      ctx.arc(cx + Math.cos(angle) * dist, cx + Math.sin(angle) * dist,
+              Math.max(0.3, size * (0.004 + rng() * 0.022)), 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.globalCompositeOperation = "source-over";
   } else {
+    // ── Default round brush: solid circle with subtle edge variation ──
     ctx.fillStyle = "rgba(255,255,255,1)";
     ctx.beginPath();
     ctx.arc(cx, cx, r * 0.9, 0, Math.PI * 2);
     ctx.fill();
+    // Subtle edge irregularity for natural feel
     ctx.globalCompositeOperation = "destination-out";
-    for (let i = 0; i < 8; i++) {
-      const a = (i / 8) * Math.PI * 2;
-      ctx.globalAlpha = 0.3 + rng() * 0.3;
+    for (let i = 0; i < 6; i++) {
+      const angle = (i / 6) * Math.PI * 2 + rng() * 0.5;
+      ctx.globalAlpha = 0.2 + rng() * 0.2;
       ctx.beginPath();
-      ctx.arc(cx + Math.cos(a)*r*0.85, cx + Math.sin(a)*r*0.85, rng()*r*0.15, 0, Math.PI*2);
+      ctx.arc(cx + Math.cos(angle) * r * 0.82, cx + Math.sin(angle) * r * 0.82,
+              rng() * r * 0.12, 0, Math.PI * 2);
       ctx.fill();
     }
+    ctx.globalCompositeOperation = "source-over";
   }
+
   return c;
 }
 
 function getProceduralShape(preset: BrushPreset, size: number): OffscreenCanvas {
   const quantizedSize = quantizeProceduralSize(size);
-  const key = `${preset.id}:${quantizedSize}`;
+  const kind = classifyProceduralBrush(preset);
+  const key = proceduralShapeKey(preset, kind, quantizedSize);
   let tex = procTexCache.get(key);
   if (tex) {
     // Refresh insertion order so eviction approximates least-recently-used.
@@ -208,7 +422,7 @@ function getProceduralShape(preset: BrushPreset, size: number): OffscreenCanvas 
     return tex;
   }
 
-  tex = generateProceduralShape(preset, quantizedSize);
+  tex = generateProceduralShape(preset, quantizedSize, kind, key);
   cacheProceduralShape(key, tex);
   return tex;
 }
@@ -459,16 +673,30 @@ function renderStampContent(
 }
 
 function drawHardnessCircle(ctx: AnyCtx, radius: number, color: RGB, hardness: number, square: boolean): void {
-  if (hardness >= 0.99) {
+  const normalizedHardness = clamp(hardness, 0, 1);
+  if (normalizedHardness >= 0.99) {
     ctx.fillStyle = rgba(color);
     if (square) ctx.fillRect(-radius, -radius, radius*2, radius*2);
     else { ctx.beginPath(); ctx.arc(0, 0, radius, 0, Math.PI*2); ctx.fill(); }
     return;
   }
-  const inner = Math.max(0, radius * hardness);
+  // Hardness is the normalized radius of the fully opaque core:
+  //   float t = smoothstep(hardness, 1.0, dist / radius);
+  //   alpha = 1.0 - t;
+  //
+  // Canvas2D interpolates linearly between gradient stops. Nine deterministic
+  // samples keep the piecewise-linear approximation within ~1.1% of the
+  // analytic smoothstep curve while remaining cheap to construct.
+  const inner = radius * normalizedHardness;
   const grad = ctx.createRadialGradient(0, 0, inner, 0, 0, radius);
-  grad.addColorStop(0, rgba(color));
-  grad.addColorStop(1, rgba0(color));
+  const colorAt = (t: number): string => {
+    const a = 1 - (t * t * (3 - 2 * t)); // smoothstep inverted
+    return `rgba(${color.r},${color.g},${color.b},${(color.a * a).toFixed(4)})`;
+  };
+  for (let index = 0; index <= 8; index++) {
+    const t = index / 8;
+    grad.addColorStop(t, t === 1 ? rgba0(color) : colorAt(t));
+  }
   ctx.fillStyle = grad;
   if (square) ctx.fillRect(-radius, -radius, radius*2, radius*2);
   else { ctx.beginPath(); ctx.arc(0, 0, radius, 0, Math.PI*2); ctx.fill(); }
@@ -492,6 +720,15 @@ const BLEND_OPERATIONS: Record<BrushPreset["blendType"], GlobalCompositeOperatio
   3: "lighter",
 };
 
+function strokeTangentAngle(stamps: StampPoint[], index: number): number {
+  if (stamps.length <= 1) return 0;
+  const from = stamps[index > 0 ? index - 1 : index]!;
+  const to = stamps[index + 1 < stamps.length ? index + 1 : index]!;
+  const dx = to.x - from.x;
+  const dy = to.y - from.y;
+  return Math.abs(dx) + Math.abs(dy) < 0.001 ? 0 : Math.atan2(dy, dx);
+}
+
 export function renderStroke(
   ctx: AnyCtx,
   preset: BrushPreset,
@@ -503,7 +740,11 @@ export function renderStroke(
 ): void {
   if (points.length === 0) return;
   const parsed = applyDepth(parseColor(color), preset.depth);
-  const opacity = opts.opacityOverride ?? 1;
+  // Keep tip geometry independent from paint alpha. This lets a transparent
+  // brush act as a pure smudge while Canvas2D applies color alpha exactly once
+  // through globalAlpha during paint deposition.
+  const tipColor: RGB = parsed.a === 1 ? parsed : { ...parsed, a: 1 };
+  const opacity = clamp(opts.opacityOverride ?? 1, 0, 1);
   const isEraser = opts.forceEraser || preset.eraser;
   const hasSmear = Math.abs(preset.smearStrength) > 0.001;
   const fallbackSeed = hashStr(
@@ -530,7 +771,11 @@ export function renderStroke(
   const canvasH = (ctx.canvas as { height: number }).height || 720;
   const strokeCtx = getStrokeBuffer(canvasW, canvasH);
 
-  const smearSource = hasSmear && !isEraser
+  // Keep one immutable base snapshot. Every stamp reconstructs only the small
+  // source region it needs from base + the current stroke buffer. This gives
+  // framebuffer-equivalent feedback without full-canvas copies or pixel
+  // readback inside the stamp loop.
+  const smearInitial = hasSmear && !isEraser
     ? captureSmearSource(opts.smearSource ?? ctx, canvasW, canvasH)
     : null;
 
@@ -543,40 +788,87 @@ export function renderStroke(
     const w = stamp.width;
     if (w < 0.5) continue;
 
-    // Drag a frozen sample from behind the dab into its new position.
-    if (smearSource) {
-      const offX = Math.cos(stamp.angle) * w * preset.smearStrength;
-      const offY = Math.sin(stamp.angle) * w * preset.smearStrength;
-      strokeCtx.save();
-      strokeCtx.globalAlpha = clamp(Math.abs(preset.smearStrength), 0, 1) * stamp.alpha;
-      strokeCtx.drawImage(smearSource,
-        Math.round(stamp.x - offX - w/2), Math.round(stamp.y - offY - w/2), Math.round(w), Math.round(w),
-        stamp.x - w/2, stamp.y - w/2, w, w);
-      strokeCtx.restore();
-    }
-
-    // Render stamp content to stamp buffer
+    // Render an opaque-alpha tip first. It is shared by the smudge mask and
+    // paint deposition, so transparent paint does not disable smudging.
     stampBuf.ctx.clearRect(0, 0, stampBuf.size, stampBuf.size);
     renderStampContent(
       stampBuf.ctx,
       preset,
       w,
-      parsed,
+      tipColor,
       textures,
       stampBuf.center,
       (seed ^ Math.imul(stampIndex + 1, 0x9e3779b1)) >>> 0,
     );
 
-    // Composite stamp buffer → stroke buffer
-    strokeCtx.save();
-    strokeCtx.translate(stamp.x, stamp.y);
-    strokeCtx.rotate(stamp.angle);
-    if (preset.roundness < 1) strokeCtx.scale(1, preset.roundness);
-    strokeCtx.globalAlpha = stamp.alpha;
-    strokeCtx.drawImage(_stampBuf!,
-      stampBuf.center - w/2, stampBuf.center - w/2, w, w,
-      -w/2, -w/2, w, w);
-    strokeCtx.restore();
+    if (smearInitial) {
+      const tangent = strokeTangentAngle(stamps, stampIndex);
+      const signedOffset = w * preset.smearStrength;
+      const sampleSize = Math.max(1, Math.round(w));
+      const sourceX = Math.round(stamp.x - Math.cos(tangent) * signedOffset - sampleSize / 2);
+      const sourceY = Math.round(stamp.y - Math.sin(tangent) * signedOffset - sampleSize / 2);
+      const sampleCtx = getSmearSampleBuffer(sampleSize);
+
+      // Reconstruct the current framebuffer in the pickup region: immutable
+      // layer pixels first, then every smear/paint dab already in this stroke.
+      drawCanvasRegion(sampleCtx, smearInitial, sourceX, sourceY, sampleSize, sampleSize);
+      sampleCtx.save();
+      sampleCtx.globalCompositeOperation = BLEND_OPERATIONS[preset.blendType];
+      sampleCtx.globalAlpha = opacity;
+      drawCanvasRegion(sampleCtx, _strokeBuf!, sourceX, sourceY, sampleSize, sampleSize);
+      sampleCtx.restore();
+
+      // Mask the pickup with the rotated brush tip without rotating the sampled
+      // pixels themselves. This avoids square smudge tiles from textured tips.
+      sampleCtx.save();
+      sampleCtx.globalCompositeOperation = "destination-in";
+      sampleCtx.globalAlpha = 1;
+      sampleCtx.translate(sampleSize / 2, sampleSize / 2);
+      sampleCtx.rotate(stamp.angle);
+      if (preset.roundness < 1) sampleCtx.scale(1, preset.roundness);
+      sampleCtx.drawImage(
+        _stampBuf!,
+        stampBuf.center - w / 2,
+        stampBuf.center - w / 2,
+        w,
+        w,
+        -w / 2,
+        -w / 2,
+        w,
+        w,
+      );
+      sampleCtx.restore();
+
+      strokeCtx.save();
+      strokeCtx.globalAlpha = clamp(Math.abs(preset.smearStrength), 0, 1) * stamp.alpha;
+      strokeCtx.drawImage(
+        _smearSampleBuf!,
+        0,
+        0,
+        sampleSize,
+        sampleSize,
+        stamp.x - sampleSize / 2,
+        stamp.y - sampleSize / 2,
+        sampleSize,
+        sampleSize,
+      );
+      strokeCtx.restore();
+    }
+
+    // Canvas2D output bitmaps already use premultiplied alpha internally.
+    // Supplying straight RGB through drawImage/globalAlpha preserves hue at
+    // translucent edges and matches source-over without getImageData churn.
+    if (parsed.a > 0 && stamp.alpha > 0) {
+      strokeCtx.save();
+      strokeCtx.translate(stamp.x, stamp.y);
+      strokeCtx.rotate(stamp.angle);
+      if (preset.roundness < 1) strokeCtx.scale(1, preset.roundness);
+      strokeCtx.globalAlpha = stamp.alpha * parsed.a;
+      strokeCtx.drawImage(_stampBuf!,
+        stampBuf.center - w/2, stampBuf.center - w/2, w, w,
+        -w/2, -w/2, w, w);
+      strokeCtx.restore();
+    }
   }
 
   // Final composite: stroke buffer → target layer with stroke-level opacity
@@ -604,12 +896,13 @@ export function renderPreviewDab(
 ): void {
   try {
     const parsed = parseColor(color);
+    const tipColor: RGB = parsed.a === 1 ? parsed : { ...parsed, a: 1 };
     const w = Math.min(preset.width, 40);
     const buf = getStampBuffer(Math.ceil(w));
-    renderStampContent(buf.ctx, preset, w, parsed, textures, buf.center, hashStr(preset.id));
+    renderStampContent(buf.ctx, preset, w, tipColor, textures, buf.center, hashStr(preset.id));
     ctx.save();
     ctx.translate(x, y);
-    ctx.globalAlpha = preset.alpha * preset.brushFlow;
+    ctx.globalAlpha = preset.alpha * preset.brushFlow * parsed.a;
     ctx.drawImage(_stampBuf!, buf.center - w/2, buf.center - w/2, w, w, -w/2, -w/2, w, w);
     ctx.restore();
   } catch { /* skip */ }

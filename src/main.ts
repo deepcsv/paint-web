@@ -206,10 +206,14 @@ function drawStrokePreview(stroke: PendingStroke): void {
     if (preset.shapeTexture) textures.shape = getTexture(preset.shapeTexture);
     if (preset.surfaceTexture) textures.surface = getTexture(preset.surfaceTexture);
     const sizeMult = stroke.size / Math.max(preset.width, 1);
+    const smearSource = Math.abs(preset.smearStrength) > 0.001 && stroke.layerId
+      ? controller.layers.getLayer(stroke.layerId)?.ctx
+      : undefined;
     renderStrokeLive(overlayCtx, preset, stroke.points, stroke.color, textures, sizeMult, {
       forceEraser: stroke.tool === "eraser",
       opacityOverride: stroke.opacity,
       seed: stroke.seed,
+      smearSource,
     });
     return;
   }

@@ -1,6 +1,10 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { Canvas } from "@napi-rs/canvas";
-import { renderStroke, clearProcTexCache } from "../src/canvas/StampEngine.js";
+import {
+  classifyProceduralBrush,
+  clearProcTexCache,
+  renderStroke,
+} from "../src/canvas/StampEngine.js";
 import type { BrushPreset } from "../src/brush/BrushTypes.js";
 import { DEFAULT_BRUSH } from "../src/brush/BrushTypes.js";
 import { ALL_BRUSHES, getByNameOrId, getById, NAME_TO_ID } from "../src/brush/BrushPresets.js";
@@ -257,6 +261,325 @@ maybeDescribe("P1: determinism", () => {
     const a = ctxA.getImageData(0, 0, 220, 100).data;
     const b = ctxB.getImageData(0, 0, 220, 100).data;
     expect(a.some((channel, index) => channel !== b[index])).toBe(true);
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════
+// v7: Canvas-native alpha, smoothstep hardness, live smear, texture quality
+// ════════════════════════════════════════════════════════════════════════
+
+maybeDescribe("v7: Canvas-native premultiplied compositing", () => {
+  it("preserves straight RGB hue at a translucent soft edge", () => {
+    const { ctx } = makeCanvas(120, 120);
+    const brush: BrushPreset = {
+      ...HARD_ROUND,
+      id: "alpha-soft-edge",
+      width: 80,
+      smallWidth: 80,
+      hardness: 0,
+      spacing: 1,
+      alpha: 0.5,
+      smallAlpha: 0.5,
+      brushFlow: 1,
+      smallBrushFlow: 1,
+      pixelpen: true,
+    };
+    renderStroke(ctx, brush, [{ x: 60, y: 60, pressure: 1 }], "#3366cc", {});
+
+    // At radius 25 of 40, smoothstep alpha is translucent. ImageData exposes
+    // straight RGB, so hue must stay near #3366cc instead of RGB×alpha.
+    const px = getPixel(ctx, 85, 60);
+    expect(px[3]).toBeGreaterThan(20);
+    expect(px[3]).toBeLessThan(90);
+    expect(px[0]).toBeGreaterThanOrEqual(47);
+    expect(px[0]).toBeLessThanOrEqual(55);
+    expect(px[1]).toBeGreaterThanOrEqual(98);
+    expect(px[1]).toBeLessThanOrEqual(106);
+    expect(px[2]).toBeGreaterThanOrEqual(198);
+    expect(px[2]).toBeLessThanOrEqual(208);
+  });
+
+  it("preserves hue where dense soft stamps overlap", () => {
+    const { ctx } = makeCanvas(220, 100);
+    const brush: BrushPreset = {
+      ...HARD_ROUND,
+      id: "alpha-dense-soft",
+      width: 30,
+      smallWidth: 30,
+      hardness: 0,
+      spacing: 0.03,
+      alpha: 0.45,
+      smallAlpha: 0.45,
+      brushFlow: 1,
+      smallBrushFlow: 1,
+      pixelpen: true,
+    };
+    renderStroke(ctx, brush,
+      [{ x: 30, y: 50, pressure: 1 }, { x: 190, y: 50, pressure: 1 }],
+      "#3366cc", {});
+
+    const px = getPixel(ctx, 110, 60);
+    expect(px[3]).toBeGreaterThan(180);
+    // Repeated low-alpha rasterization can lose a few levels, but it must not
+    // collapse toward the RGB×mask values (~13/26/53) produced by the old path.
+    expect(Math.abs(px[0]! - 0x33)).toBeLessThanOrEqual(8);
+    expect(Math.abs(px[1]! - 0x66)).toBeLessThanOrEqual(8);
+    expect(Math.abs(px[2]! - 0xcc)).toBeLessThanOrEqual(8);
+  });
+});
+
+maybeDescribe("v7: smoothstep hardness curve", () => {
+  it("matches the analytic curve at t=0.25, 0.5, and 0.75", () => {
+    const { ctx } = makeCanvas(140, 140);
+    const brush: BrushPreset = {
+      ...HARD_ROUND,
+      width: 100,
+      smallWidth: 100,
+      hardness: 0.2,
+      spacing: 1,
+      alpha: 1,
+      smallAlpha: 1,
+      brushFlow: 1,
+      smallBrushFlow: 1,
+      pixelpen: true,
+    };
+    renderStroke(ctx, brush, [{ x: 70, y: 70, pressure: 1 }], "#000000", {});
+
+    // inner radius=10, outer radius=50, so distances 20/30/40 map exactly
+    // to t=.25/.5/.75. Expected inverted smoothstep alpha: .84375/.5/.15625.
+    expect(Math.abs(getPixel(ctx, 90, 70)[3]! - 215)).toBeLessThanOrEqual(12);
+    expect(Math.abs(getPixel(ctx, 100, 70)[3]! - 128)).toBeLessThanOrEqual(12);
+    expect(Math.abs(getPixel(ctx, 110, 70)[3]! - 40)).toBeLessThanOrEqual(12);
+  });
+
+  it("uses hardness as the opaque-core radius", () => {
+    const { ctx: softCtx } = makeCanvas(140, 140);
+    const { ctx: hardCtx } = makeCanvas(140, 140);
+    const base: BrushPreset = {
+      ...HARD_ROUND,
+      width: 100,
+      smallWidth: 100,
+      spacing: 1,
+      alpha: 1,
+      smallAlpha: 1,
+      pixelpen: true,
+    };
+    renderStroke(softCtx, { ...base, hardness: 0.2 }, [{ x: 70, y: 70, pressure: 1 }], "#000000", {});
+    renderStroke(hardCtx, { ...base, hardness: 0.8 }, [{ x: 70, y: 70, pressure: 1 }], "#000000", {});
+
+    const soft = getPixel(softCtx, 105, 70)[3]!;
+    const hard = getPixel(hardCtx, 105, 70)[3]!;
+    expect(hard).toBeGreaterThan(245);
+    expect(hard - soft).toBeGreaterThan(140);
+  });
+});
+
+maybeDescribe("v7: live smear feedback", () => {
+  const smearBrush = (strength: number, width = 30, spacing = 0.2): BrushPreset => ({
+    ...HARD_ROUND,
+    id: `smear-${strength}-${width}-${spacing}`,
+    width,
+    smallWidth: width,
+    spacing,
+    hardness: 1,
+    alpha: 1,
+    smallAlpha: 1,
+    brushFlow: 1,
+    smallBrushFlow: 1,
+    smearStrength: strength,
+    pixelpen: true,
+  });
+
+  it("picks up a color island encountered after the first stamp", () => {
+    const { ctx } = makeCanvas(360, 100);
+    ctx.fillStyle = "#00cc44";
+    ctx.fillRect(130, 25, 30, 50);
+
+    renderStroke(ctx, smearBrush(1, 30, 0.15),
+      [{ x: 70, y: 50, pressure: 1 }, { x: 300, y: 50, pressure: 1 }],
+      "#00000000", {}, 1, { smearSource: ctx });
+
+    const carried = getPixel(ctx, 205, 50);
+    expect(carried[1]).toBeGreaterThan(80);
+    expect(carried[1]).toBeGreaterThan(carried[0]! * 2);
+    expect(carried[3]).toBeGreaterThan(30);
+  });
+
+  it("preserves the sign of smearStrength", () => {
+    const makeDirectionalSource = () => {
+      const canvas = makeCanvas(300, 100);
+      canvas.ctx.fillStyle = "#ff0000";
+      canvas.ctx.fillRect(70, 20, 50, 60);
+      canvas.ctx.fillStyle = "#0000ff";
+      canvas.ctx.fillRect(180, 20, 50, 60);
+      return canvas;
+    };
+    const positive = makeDirectionalSource();
+    const negative = makeDirectionalSource();
+    const points = [{ x: 140, y: 50, pressure: 1 }];
+
+    renderStroke(positive.ctx, smearBrush(1, 40, 1), points, "#00000000", {}, 1, { smearSource: positive.ctx });
+    renderStroke(negative.ctx, smearBrush(-1, 40, 1), points, "#00000000", {}, 1, { smearSource: negative.ctx });
+
+    const fromBehind = getPixel(positive.ctx, 140, 50);
+    const fromAhead = getPixel(negative.ctx, 140, 50);
+    expect(fromBehind[0]).toBeGreaterThan(180);
+    expect(fromBehind[2]).toBeLessThan(40);
+    expect(fromAhead[2]).toBeGreaterThan(180);
+    expect(fromAhead[0]).toBeLessThan(40);
+  });
+
+  it("samples along the stroke tangent when tip rotation is fixed", () => {
+    const { ctx } = makeCanvas(300, 260);
+    ctx.fillStyle = "#ff3300";
+    ctx.fillRect(120, 40, 60, 50);
+    const brush = { ...smearBrush(1, 30, 0.2), rotFlowFinger: false, rotation: 0 };
+
+    renderStroke(ctx, brush,
+      [{ x: 150, y: 110, pressure: 1 }, { x: 150, y: 220, pressure: 1 }],
+      "#00000000", {}, 1, { smearSource: ctx });
+
+    const picked = getPixel(ctx, 150, 110);
+    expect(picked[0]).toBeGreaterThan(180);
+    expect(picked[1]).toBeLessThan(80);
+  });
+});
+
+maybeDescribe("v7: brush-type-specific procedural textures", () => {
+  beforeEach(() => clearProcTexCache());
+
+  it("classifies shipped semantic brushes before numeric heuristics", () => {
+    expect(classifyProceduralBrush(getByNameOrId("水彩笔"))).toBe("watercolor");
+    expect(classifyProceduralBrush(getByNameOrId("碳笔"))).toBe("charcoal");
+    expect(classifyProceduralBrush(getByNameOrId("喷笔"))).toBe("spray");
+    expect(classifyProceduralBrush(getByNameOrId("马克笔"))).toBe("directional");
+  });
+
+  it("spray has greater particle density near the center", () => {
+    const { ctx } = makeCanvas(160, 160);
+    const brush: BrushPreset = {
+      ...HARD_ROUND,
+      id: "spray-density",
+      name: "喷枪测试",
+      useShape: true,
+      shapeTexture: "missing-spray",
+      spacing: 0.3,
+      width: 100,
+      smallWidth: 100,
+      pixelpen: true,
+    };
+    renderStroke(ctx, brush, [{ x: 80, y: 80, pressure: 1 }], "#000000", {});
+
+    let innerPainted = 0;
+    let innerTotal = 0;
+    let outerPainted = 0;
+    let outerTotal = 0;
+    for (let y = 30; y <= 130; y++) {
+      for (let x = 30; x <= 130; x++) {
+        const radius = Math.hypot(x - 80, y - 80);
+        const painted = getPixel(ctx, x, y)[3]! > 20;
+        if (radius <= 20) {
+          innerTotal++;
+          if (painted) innerPainted++;
+        } else if (radius >= 34 && radius <= 46) {
+          outerTotal++;
+          if (painted) outerPainted++;
+        }
+      }
+    }
+    expect(innerPainted / innerTotal).toBeGreaterThan((outerPainted / outerTotal) * 1.35);
+  });
+
+  it("directional fibers have stronger local X continuity than Y continuity", () => {
+    const { ctx } = makeCanvas(160, 160);
+    const brush: BrushPreset = {
+      ...HARD_ROUND,
+      id: "directional-continuity",
+      name: "马克笔测试",
+      useShape: true,
+      shapeTexture: "missing-marker",
+      roundness: 1,
+      width: 96,
+      smallWidth: 96,
+      spacing: 0.1,
+      pixelpen: true,
+    };
+    renderStroke(ctx, brush, [{ x: 80, y: 80, pressure: 1 }], "#000000", {});
+
+    let horizontalPairs = 0;
+    let verticalPairs = 0;
+    for (let y = 34; y < 126; y++) {
+      for (let x = 34; x < 126; x++) {
+        if (getPixel(ctx, x, y)[3]! <= 40) continue;
+        if (getPixel(ctx, x + 1, y)[3]! > 40) horizontalPairs++;
+        if (getPixel(ctx, x, y + 1)[3]! > 40) verticalPairs++;
+      }
+    }
+    expect(horizontalPairs).toBeGreaterThan(verticalPairs * 1.2);
+  });
+
+  it("watercolor has an organic non-radial boundary", () => {
+    const { ctx } = makeCanvas(160, 160);
+    const brush: BrushPreset = {
+      ...HARD_ROUND,
+      id: "watercolor-boundary",
+      name: "水彩测试",
+      useShape: true,
+      shapeTexture: "missing-watercolor",
+      spacing: 0.5,
+      roundness: 1,
+      width: 100,
+      smallWidth: 100,
+      pixelpen: true,
+    };
+    renderStroke(ctx, brush, [{ x: 80, y: 80, pressure: 1 }], "#000000", {});
+
+    const samples: number[] = [];
+    for (let index = 0; index < 16; index++) {
+      const angle = index / 16 * Math.PI * 2;
+      samples.push(getPixel(ctx, 80 + Math.cos(angle) * 38, 80 + Math.sin(angle) * 38)[3]!);
+    }
+    expect(Math.max(...samples) - Math.min(...samples)).toBeGreaterThan(100);
+    expect(samples.filter((alpha) => alpha > 20).length).toBeGreaterThan(3);
+  });
+
+  it("invalidates the cache when classification parameters change", () => {
+    const { ctx: sprayCtx } = makeCanvas(140, 140);
+    const { ctx: waterCtx } = makeCanvas(140, 140);
+    const shared: BrushPreset = {
+      ...HARD_ROUND,
+      id: "shared-cache-id",
+      useShape: true,
+      width: 80,
+      smallWidth: 80,
+      roundness: 1,
+      spacing: 0.1,
+      pixelpen: true,
+    };
+    renderStroke(sprayCtx,
+      { ...shared, name: "喷枪缓存测试", shapeTexture: "missing-spray" },
+      [{ x: 70, y: 70, pressure: 1 }], "#000000", {});
+    renderStroke(waterCtx,
+      { ...shared, name: "水彩缓存测试", shapeTexture: "missing-water" },
+      [{ x: 70, y: 70, pressure: 1 }], "#000000", {});
+
+    const spray = sprayCtx.getImageData(0, 0, 140, 140).data;
+    const water = waterCtx.getImageData(0, 0, 140, 140).data;
+    expect(spray.some((channel, index) => channel !== water[index])).toBe(true);
+  });
+
+  it("renders every shipped non-eraser preset when texture assets are unavailable", () => {
+    const blankPresets: string[] = [];
+    for (const preset of ALL_BRUSHES) {
+      if (preset.eraser) continue;
+      const { ctx } = makeCanvas(80, 80);
+      const sizeMultiplier = 48 / Math.max(1, preset.width);
+      const pressure = preset.pressReverse ? 0 : 1;
+      renderStroke(ctx, preset, [{ x: 40, y: 40, pressure }], "#43372f", {}, sizeMultiplier, { seed: 17 });
+      const pixels = ctx.getImageData(0, 0, 80, 80).data;
+      if (!pixels.some((channel, index) => index % 4 === 3 && channel > 0)) blankPresets.push(preset.name);
+    }
+    expect(blankPresets).toEqual([]);
   });
 });
 
