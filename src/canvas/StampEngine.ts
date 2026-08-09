@@ -29,7 +29,11 @@ function parseColor(hex: string): RGB {
 }
 
 function applyDepth(c: RGB, depth: number): RGB {
-  if (depth >= 99) return c;
+  // Shipped presets use depth=0 as the legacy "disabled" sentinel. Treating
+  // it as a numeric level count collapses colors to two channels (for example
+  // neutral #43423f becomes olive #808000), so only quantize explicit 1..98
+  // depth values.
+  if (depth <= 0 || depth >= 99) return c;
   const lv = Math.max(2, Math.round(depth / 100 * 255));
   const q = (v: number) => Math.round(v / 255 * lv) / lv * 255;
   return { r: q(c.r), g: q(c.g), b: q(c.b), a: c.a };
