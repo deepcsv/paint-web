@@ -30,6 +30,18 @@ instead of hiding them under more marks.
   image sequence. Preserve the catalog, source/blur/edge contact sheets, and
   sequence audit beside the study notes.
 
+## Audit a reference sequence
+
+For a multi-page manuscript or ordered image archive:
+
+1. inventory every image and verify hashes, numbering, duplicates, and gaps;
+2. inspect source, blurred-value, and edge contact sheets covering every page;
+3. record visible evidence, one transferable rule, and one caution per image;
+4. label photos/annotations, construction stages, and finished drawings as
+   different evidence types—never infer an invisible process from a finish;
+5. synthesize only rules supported by geometry, light, or repeated pages;
+6. preserve provenance, coverage counts, diagnostics, and validation results.
+
 ## Diagnose before drawing
 
 Inspect the current image at full size and as a blurred thumbnail. Name the
@@ -83,8 +95,9 @@ throw independent random short lines.
 Add the second family only in halftone/shadow and the third family only in deep
 accents. Keep each family internally even. Prefer long curved streamlines,
 then segment them into tapered hand gestures. Cross families must meet the
-primary family obliquely—normally about 25–55°, never as a near-90° mechanical
-grid unless the observed reference explicitly requires it.
+primary family obliquely—normally about 25–55°. Never permit a near-90°
+mechanical grid. Set `angleAgainst` on every cross family so the generator can
+reject a bad direction field before emitting strokes.
 
 Run the bundled generator's self-test before first use in a session:
 
@@ -125,8 +138,8 @@ Use three complementary checks:
    contact/cast-shadow falloff.
 3. **Stroke field**: median direction error <= 15°, 90th percentile <= 30°,
    same-family spacing coefficient of variation <= 0.35, cross-family median
-   angle 25–55° with no near-orthogonal grid, and no visible clumps or
-   needle-like fragments.
+   angle 25–55°, every sampled local cross angle <= 70°, and no visible clumps,
+   near-orthogonal grids, or needle-like fragments.
 
 Use paint-web `analyze` for coverage/bounds/luminance and snapshots for visual
 judgment. Measurements can reject failures; they cannot certify artistic
@@ -154,7 +167,8 @@ If a raster reference was analyzed but not imported, state that explicitly.
 - `references/geometric-solids-image-atlas.md`: evidence-tiered observations,
   transferable rules, and cautions for pages 001–077 of the studied corpus.
 - `scripts/field-hatching.mjs`: dependency-free deterministic streamline
-  placement and native `draw.stroke` JSONL generation.
+  placement, cross-family angle rejection, and native `draw.stroke` JSONL
+  generation.
 - `scripts/catalog-reference-images.py`: image-sequence inventory, SHA-256 and
   continuity audit, quantitative diagnostics, and source/blur/edge contact
   sheet generation.
