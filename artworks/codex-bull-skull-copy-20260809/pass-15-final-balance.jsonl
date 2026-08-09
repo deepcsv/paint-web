@@ -1,0 +1,4 @@
+{"method":"layer.setOpacity","params":{"layerId":"L_bs9_skull01","opacity":0.62}}
+{"method":"layer.setOpacity","params":{"layerId":"L_bs9_details01","opacity":0.86}}
+{"method":"layer.setOpacity","params":{"layerId":"L_bs9_hatch01","opacity":0.72}}
+{"method":"layer.setActive","params":{"layerId":"L_bs9_details01"}}

@@ -1,0 +1,17 @@
+{"method":"layer.delete","params":{"layerId":"L_bs9_shadow01"}}
+{"method":"layer.delete","params":{"layerId":"L_bs9_horns01"}}
+{"method":"layer.delete","params":{"layerId":"L_bs9_skull01"}}
+{"method":"layer.delete","params":{"layerId":"L_bs9_hatch01"}}
+{"method":"layer.delete","params":{"layerId":"L_bs9_details01"}}
+{"method":"layer.delete","params":{"layerId":"L_bs9_lights01"}}
+{"method":"layer.create","params":{"layerId":"L_bs9_shadow01","name":"BULL SKULL 04 // WALL AND CONTACT SHADOW"}}
+{"method":"layer.setBlendMode","params":{"layerId":"L_bs9_shadow01","blendMode":"multiply"}}
+{"method":"layer.create","params":{"layerId":"L_bs9_horns01","name":"BULL SKULL 05 // HORN MASSES"}}
+{"method":"layer.setBlendMode","params":{"layerId":"L_bs9_horns01","blendMode":"multiply"}}
+{"method":"layer.create","params":{"layerId":"L_bs9_skull01","name":"BULL SKULL 06 // BONE VALUE MASSES"}}
+{"method":"layer.setBlendMode","params":{"layerId":"L_bs9_skull01","blendMode":"multiply"}}
+{"method":"layer.create","params":{"layerId":"L_bs9_hatch01","name":"BULL SKULL 07 // FORM HATCHING"}}
+{"method":"layer.setBlendMode","params":{"layerId":"L_bs9_hatch01","blendMode":"multiply"}}
+{"method":"layer.create","params":{"layerId":"L_bs9_details01","name":"BULL SKULL 08 // SOCKETS SUTURES AND STUDS"}}
+{"method":"layer.setBlendMode","params":{"layerId":"L_bs9_details01","blendMode":"multiply"}}
+{"method":"layer.create","params":{"layerId":"L_bs9_lights01","name":"BULL SKULL 09 // BONE AND CARVING LIFTS"}}

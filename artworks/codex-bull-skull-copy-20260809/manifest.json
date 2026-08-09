@@ -1,0 +1,148 @@
+{
+  "title": "Bull Skull Wall Study — Native Graphite Copy",
+  "reference": {
+    "path": "/var/folders/bq/m7h7lbt92776192vcps9c_640000gn/T/codex-clipboard-c10e37fb-eb30-4122-bc8b-3c2f6fc90df3.png",
+    "use": "observation and landmark measurement only",
+    "importedToCanvas": false
+  },
+  "canvas": {
+    "width": 900,
+    "height": 938,
+    "paper": "#ddd9d1"
+  },
+  "paintBranch": "art/codex-bull-skull-copy-20260809",
+  "sourcePolicy": "no raster import or generated image; graphite rendering is built from native draw.stroke marks plus native path/gradient/rectangle underpainting",
+  "lightDirection": "upper-right/front, broad",
+  "landmarks": {
+    "friezeBottom": 130,
+    "pin": {
+      "x": 450,
+      "y": 170
+    },
+    "skullTop": {
+      "x": 450,
+      "y": 270
+    },
+    "skullBottom": {
+      "x": 456,
+      "y": 831
+    },
+    "leftHornTip": {
+      "x": 111,
+      "y": 58
+    },
+    "rightHornTip": {
+      "x": 809,
+      "y": 55
+    }
+  },
+  "valuePlan": {
+    "darkest": "eye sockets, nasal cavities, horn undersides, left wall contact shadow, frieze recesses",
+    "halftone": "skull side planes and wall grain",
+    "light": "central nasal ridge, upper frontal planes, stud highlights"
+  },
+  "passCounts": {
+    "setup": 29,
+    "construction": 21,
+    "background": 122,
+    "backgroundDeepen": 28,
+    "backgroundConsolidate": 2,
+    "resetValueStack": 17,
+    "shadowUnderpaint": 2,
+    "shadow": 60,
+    "horns": 96,
+    "skullUnderpaint": 4,
+    "skullValueBase": 140,
+    "skullValueRefine": 35,
+    "valueReview": 1,
+    "valueBalance": 2,
+    "primaryPencil": 109,
+    "primaryNative": 109,
+    "crossPencil": 78,
+    "crossNative": 78,
+    "details": 175,
+    "cavityDepth": 8,
+    "ornamentStudsCords": 235,
+    "lights": 23,
+    "finish": 5,
+    "hornDepth": 6,
+    "cavityPolish": 14,
+    "polishLights": 10,
+    "finalBalance": 4,
+    "referenceConvergence": 100
+  },
+  "nativeStrokeCount": 1385,
+  "familyCounts": {
+    "skullPrimary": 70,
+    "skullCross": 57,
+    "shadowPrimary": 58,
+    "shadowCross": 20
+  },
+  "angleAudit": {
+    "skull": [
+      {
+        "family": "skullCross",
+        "against": "skullPrimary",
+        "sampleCount": 59,
+        "medianDeg": 39.534,
+        "p95Deg": 39.534,
+        "maxDeg": 39.534,
+        "required": {
+          "medianMinDeg": 25,
+          "medianMaxDeg": 55,
+          "localMaxDeg": 70
+        },
+        "pass": true
+      }
+    ],
+    "shadow": [
+      {
+        "family": "shadowCross",
+        "against": "shadowPrimary",
+        "sampleCount": 18,
+        "medianDeg": 33.232,
+        "p95Deg": 33.232,
+        "maxDeg": 33.232,
+        "required": {
+          "medianMinDeg": 25,
+          "medianMaxDeg": 55,
+          "localMaxDeg": 70
+        },
+        "pass": true
+      }
+    ],
+    "explicit": {
+      "skullDegrees": 39.5340878640268,
+      "shadowDegrees": 33.231552117587746
+    }
+  },
+  "passes": [
+    "pass-00-isolate-setup.jsonl",
+    "pass-01-construction.jsonl",
+    "pass-02-background-frieze.jsonl",
+    "pass-02b-background-deepen.jsonl",
+    "pass-02c-frieze-consolidate.jsonl",
+    "pass-02d-reset-value-stack-v3.jsonl",
+    "pass-02e-reset-value-stack-v4.jsonl",
+    "pass-03a-shadow-underpaint-v4.jsonl",
+    "pass-03-wall-shadow.jsonl",
+    "pass-04-horns.jsonl",
+    "pass-05a-skull-underpaint-v4.jsonl",
+    "pass-05a-skull-values-base.jsonl",
+    "pass-05b-skull-values-refine.jsonl",
+    "pass-05c-value-review.jsonl",
+    "pass-05d-value-balance-v4.jsonl",
+    "pass-06-primary-hatch.jsonl",
+    "pass-07-oblique-cross.jsonl",
+    "pass-08-anatomical-details.jsonl",
+    "pass-08b-cavity-depth.jsonl",
+    "pass-09-ornament-studs-cords.jsonl",
+    "pass-10-lights.jsonl",
+    "pass-11-finish.jsonl",
+    "pass-12-horn-depth.jsonl",
+    "pass-13-cavity-anatomy-polish.jsonl",
+    "pass-14-stud-and-rim-lights.jsonl",
+    "pass-15-final-balance.jsonl",
+    "pass-16-reference-convergence.jsonl"
+  ]
+}

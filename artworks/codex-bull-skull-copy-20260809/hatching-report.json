@@ -1,0 +1,50 @@
+{
+  "seeds": {
+    "skull": 3037790209,
+    "shadow": 3037790210
+  },
+  "familyCounts": {
+    "skullPrimary": 70,
+    "skullCross": 57,
+    "shadowPrimary": 58,
+    "shadowCross": 20
+  },
+  "angleAudit": {
+    "skull": [
+      {
+        "family": "skullCross",
+        "against": "skullPrimary",
+        "sampleCount": 59,
+        "medianDeg": 39.534,
+        "p95Deg": 39.534,
+        "maxDeg": 39.534,
+        "required": {
+          "medianMinDeg": 25,
+          "medianMaxDeg": 55,
+          "localMaxDeg": 70
+        },
+        "pass": true
+      }
+    ],
+    "shadow": [
+      {
+        "family": "shadowCross",
+        "against": "shadowPrimary",
+        "sampleCount": 18,
+        "medianDeg": 33.232,
+        "p95Deg": 33.232,
+        "maxDeg": 33.232,
+        "required": {
+          "medianMinDeg": 25,
+          "medianMaxDeg": 55,
+          "localMaxDeg": 70
+        },
+        "pass": true
+      }
+    ],
+    "explicit": {
+      "skullDegrees": 39.5340878640268,
+      "shadowDegrees": 33.231552117587746
+    }
+  }
+}

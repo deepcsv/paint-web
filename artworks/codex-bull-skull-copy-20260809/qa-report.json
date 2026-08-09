@@ -1,0 +1,93 @@
+{
+  "title": "Bull Skull Wall Study — Native Graphite Copy",
+  "date": "2026-08-09",
+  "canvas": {
+    "width": 900,
+    "height": 938
+  },
+  "reference": {
+    "width": 1206,
+    "height": 1477,
+    "use": "observation-only",
+    "importedToCanvas": false
+  },
+  "paintBranch": "art/codex-bull-skull-copy-20260809",
+  "finalCommit": "C_3915_642a1a506795",
+  "finalCheckpoint": "bull-skull-native-final-20260809",
+  "parentArtworkCheckpoint": "before-bull-skull-copy-20260809",
+  "layers": {
+    "bullSkull": 10,
+    "inheritedConeOnBullSkullBranch": 0,
+    "constructionHidden": true,
+    "shadowOpacity": 0.58,
+    "skullOpacity": 0.62,
+    "hatchOpacity": 0.82,
+    "detailsOpacity": 0.84
+  },
+  "strokePolicy": {
+    "nativeStrokeCount": 1385,
+    "nativeUnderpainting": [
+      "draw.path",
+      "draw.gradient",
+      "draw.rect"
+    ],
+    "rasterImports": 0,
+    "generatedImages": 0
+  },
+  "hatching": {
+    "skullPrimaryCount": 70,
+    "skullCrossCount": 57,
+    "skullFamilySeparationDeg": 39.534,
+    "shadowPrimaryCount": 58,
+    "shadowCrossCount": 20,
+    "shadowFamilySeparationDeg": 33.232,
+    "perpendicularCrossing": false,
+    "auditPassed": true
+  },
+  "coverage": {
+    "compositeLuminanceMean": 0.6284246634587003,
+    "skull": 0.13148542999289267,
+    "hatch": 0.04094764273868751,
+    "details": 0.05104951433309642,
+    "horns": 0.05889125799573561
+  },
+  "rejectedCheckpoints": [
+    {
+      "name": "bull-skull-values-rejected-v1-20260809",
+      "commit": "C_3883"
+    },
+    {
+      "name": "bull-skull-values-rejected-v2-20260809",
+      "commit": "C_3889"
+    }
+  ],
+  "artifacts": {
+    "authoritativePng": "bull-skull-final-native.png",
+    "thumbnail": "bull-skull-final-thumb.png",
+    "auditSvg": "bull-skull-final.svg",
+    "auditPng": "bull-skull-final-audit.png",
+    "manifest": "manifest.json",
+    "hatchingReport": "hatching-report.json"
+  },
+  "digests": {
+    "nativePngSha256": "b702c4c01af47ea3a84ce6d67583dda838046d3b90d5a223756adb31aad0b19d",
+    "svgDigest": "4e53d8ccc14859a39d9cbbeececb2858c7ffe19c3891f086b2dfeaefe9b99a3b",
+    "manifestSha256": "1c72d12d63159b0c791573e0f00a7dadf6ff426cd3d892d8254b0f36ec6c0bff",
+    "hatchingReportSha256": "c9e1986e7e94653f014f3a33a5057b426d66fc66851774ab154ffdd57bb5e8c2"
+  },
+  "checks": {
+    "majorLandmarks": "pass",
+    "valueHierarchy": "pass",
+    "thumbnailRead": "pass",
+    "layerIsolation": "pass",
+    "jsonlValidation": "pass",
+    "sketchFoundationsTests": "7/7 pass",
+    "fieldHatchingSelfTest": "pass",
+    "gitDiffCheck": "pass",
+    "checkpointCreated": "pass",
+    "checkpointRestore": "not run in live 3148-operation session",
+    "deterministicCommitRender": "pass"
+  },
+  "authoritativeVisual": "bull-skull-final-native.png",
+  "auditNote": "SVG approximates textured brush stamps and canvas blending; use the native PNG for visual judgement."
+}
