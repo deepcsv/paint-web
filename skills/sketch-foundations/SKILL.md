@@ -1,6 +1,6 @@
 ---
 name: sketch-foundations
-description: Plan, construct, render, diagnose, and objectively validate observational graphite or pen-and-ink sketches made from genuine vector/native strokes. Use for 素描, 排线, 交叉排线, 铅笔画, observational drawing, value studies, form studies, reference-to-stroke drawing, paint-web sketching, plotter-style hatching, or when a prior drawing looks hairy, mechanical, flat, muddy, poorly proportioned, or unlike its reference. Use especially when raster generation/import is forbidden and every mark must remain auditable.
+description: Plan, construct, render, diagnose, and objectively validate observational graphite or pen-and-ink sketches made from genuine vector/native strokes. Use for 素描, 素描几何体, 排线, 交叉排线, 铅笔画, cubes, spheres, cylinders, cones, prisms, compound forms, observational drawing, value studies, form studies, reference archaeology, reference-to-stroke drawing, paint-web sketching, plotter-style hatching, or when a prior drawing looks hairy, mechanical, flat, muddy, poorly proportioned, or unlike its reference. Use especially when raster generation/import is forbidden and every mark must remain auditable.
 ---
 
 # Sketch Foundations
@@ -20,8 +20,15 @@ instead of hiding them under more marks.
   boundary in the artwork manifest.
 - Read `references/observational-sketch.md` before planning an observational
   or analytic-form sketch.
+- Read `references/geometric-solids-field-manual.md` for analytic geometric
+  forms, multi-object compositions, and a page-indexed training curriculum.
+- Read `references/geometric-solids-image-atlas.md` when auditing the 77-image
+  geometric-solids corpus or when a concrete page-level example is needed.
 - Use `scripts/field-hatching.mjs` when a pass needs more than roughly 100
   hatching strokes or when spacing/direction coherence matters.
+- Use `scripts/catalog-reference-images.py` before analyzing a long ordered
+  image sequence. Preserve the catalog, source/blur/edge contact sheets, and
+  sequence audit beside the study notes.
 
 ## Diagnose before drawing
 
@@ -141,5 +148,13 @@ If a raster reference was analyzed but not imported, state that explicitly.
 
 - `references/observational-sketch.md`: first-principles drawing model,
   algorithms, quality gates, failure diagnosis, and source boundaries.
+- `references/geometric-solids-field-manual.md`: executable construction,
+  value, hatching, edge, curriculum, and acceptance recipes for geometric
+  solids.
+- `references/geometric-solids-image-atlas.md`: evidence-tiered observations,
+  transferable rules, and cautions for pages 001–077 of the studied corpus.
 - `scripts/field-hatching.mjs`: dependency-free deterministic streamline
   placement and native `draw.stroke` JSONL generation.
+- `scripts/catalog-reference-images.py`: image-sequence inventory, SHA-256 and
+  continuity audit, quantitative diagnostics, and source/blur/edge contact
+  sheet generation.
