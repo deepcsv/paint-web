@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  auditCrossFamilyAngles,
   axisSeparation,
   batchOperations,
   clamp,
@@ -34,6 +35,7 @@ function makeConfig() {
       },
       {
         name: "cross",
+        angleAgainst: "primary",
         offset: -0.62,
         minTone: 0.56,
         spacingLight: 12,
@@ -104,6 +106,23 @@ describe("sketch-foundations field hatching", () => {
       expect(separation * 180 / Math.PI).toBeGreaterThanOrEqual(25);
       expect(separation * 180 / Math.PI).toBeLessThanOrEqual(55);
     }
+    const [audit] = auditCrossFamilyAngles(config);
+    expect(audit.pass).toBe(true);
+    expect(audit.medianDeg).toBeGreaterThanOrEqual(25);
+    expect(audit.medianDeg).toBeLessThanOrEqual(55);
+    expect(audit.maxDeg).toBeLessThanOrEqual(70);
+  });
+
+  it("rejects a near-perpendicular cross family before generating strokes", () => {
+    const config = makeConfig();
+    config.families[1].offset = Math.PI / 2;
+    expect(() => generateFieldHatching(config)).toThrow(/Cross-family angle policy failed/);
+  });
+
+  it("rejects an unknown cross-family reference", () => {
+    const config = makeConfig();
+    config.families[1].angleAgainst = "missing-family";
+    expect(() => generateFieldHatching(config)).toThrow(/Unknown angleAgainst family/);
   });
 
   it("emits finite, pressure-tapered native strokes in bounded batches", () => {

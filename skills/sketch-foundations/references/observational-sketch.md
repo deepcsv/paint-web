@@ -141,6 +141,7 @@ export default {
     },
     {
       name: "cross",
+      angleAgainst: "primary",
       minTone: 0.42,
       spacingLight: 11,
       spacingDark: 6,
@@ -175,6 +176,11 @@ export default {
   },
 };
 ```
+
+Mark every secondary crossing family with `angleAgainst`. The generator audits
+the shared direction field before drawing: median separation must remain within
+25–55°, and no sampled local separation may exceed 70°. A failing configuration
+throws before any JSONL is written.
 
 Generate JSONL with:
 

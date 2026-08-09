@@ -42,6 +42,15 @@ export function axisSeparation(a, b) {
   return separation;
 }
 
+function percentile(sortedValues, fraction) {
+  if (sortedValues.length === 0) return null;
+  const index = Math.min(
+    sortedValues.length - 1,
+    Math.max(0, Math.ceil(sortedValues.length * fraction) - 1),
+  );
+  return sortedValues[index];
+}
+
 function polylineLength(points) {
   let length = 0;
   for (let index = 1; index < points.length; index++) {
@@ -105,6 +114,76 @@ function sampleField(config, family, x, y) {
   const angle = config.direction(x, y, family);
   if (!Number.isFinite(angle)) return null;
   return { tone, angle };
+}
+
+function inferredReferenceFamily(family, families) {
+  if (family.angleAgainst) {
+    const explicit = families.find((candidate) => candidate.name === family.angleAgainst);
+    if (!explicit) {
+      throw new Error(`Unknown angleAgainst family ${family.angleAgainst} for ${family.name ?? "cross"}`);
+    }
+    return explicit;
+  }
+  const name = String(family.name ?? "");
+  const isCrossFamily = family.role === "cross" || /cross$/i.test(name);
+  if (!isCrossFamily) return null;
+  const baseName = name.replace(/cross$/i, "");
+  if (baseName) {
+    const base = families.find(
+      (candidate) => String(candidate.name ?? "").toLowerCase() === baseName.toLowerCase(),
+    );
+    if (base) return base;
+  }
+  return families.find((candidate) => candidate.name === "primary")
+    ?? families.find(
+      (candidate) => candidate !== family
+        && candidate.role !== "cross"
+        && !/cross$/i.test(String(candidate.name ?? "")),
+    )
+    ?? null;
+}
+
+export function auditCrossFamilyAngles(config) {
+  const policy = config.anglePolicy ?? {};
+  const columns = Math.max(2, Math.floor(policy.sampleColumns ?? 9));
+  const rows = Math.max(2, Math.floor(policy.sampleRows ?? 9));
+  const medianMinDeg = policy.medianMinDeg ?? 25;
+  const medianMaxDeg = policy.medianMaxDeg ?? 55;
+  const localMaxDeg = policy.localMaxDeg ?? 70;
+  const audits = [];
+
+  for (const family of config.families) {
+    const reference = inferredReferenceFamily(family, config.families);
+    if (!reference) continue;
+    const separations = [];
+    for (let row = 0; row < rows; row++) {
+      const y = config.bounds.y + config.bounds.height * (row + 0.5) / rows;
+      for (let column = 0; column < columns; column++) {
+        const x = config.bounds.x + config.bounds.width * (column + 0.5) / columns;
+        const referenceSample = sampleField(config, reference, x, y);
+        const familySample = sampleField(config, family, x, y);
+        if (!referenceSample || !familySample) continue;
+        separations.push(axisSeparation(referenceSample.angle, familySample.angle) * 180 / Math.PI);
+      }
+    }
+    separations.sort((a, b) => a - b);
+    const medianDeg = percentile(separations, 0.5);
+    const p95Deg = percentile(separations, 0.95);
+    const maxDeg = separations.length > 0 ? separations[separations.length - 1] : null;
+    const pass = separations.length === 0
+      || (medianDeg >= medianMinDeg && medianDeg <= medianMaxDeg && maxDeg <= localMaxDeg);
+    audits.push({
+      family: family.name ?? "cross",
+      against: reference.name ?? "primary",
+      sampleCount: separations.length,
+      medianDeg: medianDeg === null ? null : Number(medianDeg.toFixed(3)),
+      p95Deg: p95Deg === null ? null : Number(p95Deg.toFixed(3)),
+      maxDeg: maxDeg === null ? null : Number(maxDeg.toFixed(3)),
+      required: { medianMinDeg, medianMaxDeg, localMaxDeg },
+      pass,
+    });
+  }
+  return audits;
 }
 
 function traceHalf(config, family, seed, sign, occupancy) {
@@ -210,6 +289,17 @@ export function generateFieldHatching(config) {
     throw new Error("Config must define at least one hatch family");
   }
 
+  const angleAudit = auditCrossFamilyAngles(config);
+  const failedAngleAudit = angleAudit.find((audit) => !audit.pass);
+  if (failedAngleAudit) {
+    throw new Error(
+      `Cross-family angle policy failed for ${failedAngleAudit.family} against ${failedAngleAudit.against}: `
+      + `median ${failedAngleAudit.medianDeg}°, max ${failedAngleAudit.maxDeg}°; `
+      + `required median ${failedAngleAudit.required.medianMinDeg}–${failedAngleAudit.required.medianMaxDeg}° `
+      + `and local max <= ${failedAngleAudit.required.localMaxDeg}°`,
+    );
+  }
+
   const rootRng = createRng(config.seed ?? 1);
   const byFamily = {};
   const all = [];
@@ -219,7 +309,7 @@ export function generateFieldHatching(config) {
     byFamily[family.name ?? `family-${Object.keys(byFamily).length + 1}`] = lines;
     all.push(...lines);
   }
-  return { lines: all, byFamily };
+  return { lines: all, byFamily, angleAudit };
 }
 
 function splitIntoGestures(line, style, rng) {
@@ -354,13 +444,14 @@ async function runSelfTest() {
     direction: (x, y, family) => (family.angle ?? Math.PI / 2) + (x - 80) * 0.0028 + (y - 70) * 0.0009,
     families: [
       { name: "primary", minTone: 0.18, spacingLight: 11, spacingDark: 6, step: 2.5, minLength: 16, maxLength: 170 },
-      { name: "cross", minTone: 0.48, angle: -0.25, spacingLight: 10, spacingDark: 6.5, step: 2.5, minLength: 14, maxLength: 150 },
+      { name: "cross", angleAgainst: "primary", minTone: 0.48, angle: Math.PI / 2 - 0.72, spacingLight: 10, spacingDark: 6.5, step: 2.5, minLength: 14, maxLength: 150 },
     ],
   };
   const first = generateFieldHatching(config);
   const second = generateFieldHatching(config);
   if (JSON.stringify(first) !== JSON.stringify(second)) throw new Error("Determinism self-test failed");
   if (first.lines.length < 8) throw new Error("Coverage self-test failed");
+  if (first.angleAudit.length !== 1 || !first.angleAudit[0].pass) throw new Error("Cross-angle self-test failed");
   for (const line of first.lines) {
     if (line.length < 14) throw new Error("Minimum length self-test failed");
     for (const point of line.points) {
@@ -372,7 +463,12 @@ async function runSelfTest() {
     cross: { layerId: "L_selftest01", color: "#4d4a45" },
   }, { seed: 99, strokeSeed: 1000 });
   validateStrokeOperations(operations);
-  return { lines: first.lines.length, strokes: operations.length, batches: batchOperations(operations, 50).length };
+  return {
+    lines: first.lines.length,
+    strokes: operations.length,
+    batches: batchOperations(operations, 50).length,
+    angleAudit: first.angleAudit,
+  };
 }
 
 async function runCli() {
@@ -404,6 +500,7 @@ async function runCli() {
     strokeCount: operations.length,
     batchCount: batches.length,
     familyCounts: Object.fromEntries(Object.entries(result.byFamily).map(([name, lines]) => [name, lines.length])),
+    angleAudit: result.angleAudit,
   };
   const reportIndex = args.indexOf("--report");
   if (reportIndex >= 0 && args[reportIndex + 1]) {
