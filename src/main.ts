@@ -706,7 +706,13 @@ async function restoreRasterState(
   }
   controller.reconcileFromServer(state.layers, state.activeLayerId);
   controller.clear({});
+  const stateLayerIds = new Set(state.layers.map((layer) => layer.id));
   for (const layer of rasterLayers) {
+    // A baseline captured by an older browser can contain its throwaway local
+    // bootstrap layer even though that id was never part of the canonical
+    // base state. It cannot contribute to the document and must not abort an
+    // otherwise valid native-operation replay.
+    if (!stateLayerIds.has(layer.id)) continue;
     const blob = base64PngToBlob(layer.png);
     const restored = await controller.layers.loadIntoLayer(layer.id, blob);
     if (!restored) throw new Error(`Unable to restore raster layer ${layer.id}`);
@@ -869,7 +875,9 @@ async function applyRemoteEvent(type: string, data: unknown): Promise<void> {
 
 async function syncCanonicalDocument(): Promise<void> {
   try {
-    const snapshot = await wsClient.request<DocumentReplaySnapshot>("doc.get", {});
+    const snapshot = await wsClient.request<DocumentReplaySnapshot>("doc.get", {
+      compactActiveLayers: true,
+    });
     if (snapshot.replayable) await internalHandlers.get("document.replay")?.(snapshot);
   } catch (error) {
     console.warn("[document sync] failed:", error);

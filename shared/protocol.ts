@@ -857,7 +857,10 @@ export const TransactionExecuteResult = z.object({
 export type TransactionExecuteResult = z.infer<typeof TransactionExecuteResult>;
 
 export const DocumentGetParams = z
-  .object({ commitId: z.string().optional() })
+  .object({
+    commitId: z.string().optional(),
+    compactActiveLayers: z.boolean().optional(),
+  })
   .optional();
 export const DocumentHistoryParams = z
   .object({ limit: z.number().int().positive().max(1000).default(100) })

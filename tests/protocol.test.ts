@@ -10,6 +10,7 @@ import {
   CanvasExportParams,
   SnapshotSaveParams,
   Color,
+  DocumentGetParams,
   DocumentReplaySnapshot,
   TransactionExecuteParams,
 } from "../shared/protocol.js";
@@ -144,6 +145,12 @@ describe("protocol schemas", () => {
         replayable: true,
       }).success,
     ).toBe(true);
+  });
+
+  it("preserves the active-layer replay compaction request", () => {
+    expect(DocumentGetParams.parse({ compactActiveLayers: true })).toEqual({
+      compactActiveLayers: true,
+    });
   });
 
   it("CanvasImportParams requires exactly one durable or external source", () => {

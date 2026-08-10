@@ -95,7 +95,7 @@ export function registerHandlers(deps: HandlerDeps): void {
 
   async function replayCommit(commitId: string): Promise<void> {
     await ensureDocumentBaseline();
-    const snapshot = documentStore.getReplaySnapshot(commitId);
+    const snapshot = documentStore.getReplaySnapshot(commitId, { compactActiveLayers: true });
     if (!snapshot.replayable) {
       throw RpcError.documentConflict("Document baseline has not been captured");
     }
@@ -605,9 +605,14 @@ export function registerHandlers(deps: HandlerDeps): void {
   // -------------------------------------------------------------------------
 
   router.register("doc.get", (params) => {
-    const commitId = (params as { commitId?: string } | undefined)?.commitId;
+    const options = params as {
+      commitId?: string;
+      compactActiveLayers?: boolean;
+    } | undefined;
     try {
-      return documentStore.getReplaySnapshot(commitId);
+      return documentStore.getReplaySnapshot(options?.commitId, {
+        compactActiveLayers: options?.compactActiveLayers === true,
+      });
     } catch (error) {
       rethrowDocumentError(error);
     }

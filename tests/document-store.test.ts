@@ -158,6 +158,130 @@ describe("DocumentStore", () => {
     expect(replay.operations).toEqual([]);
   });
 
+  it("compacts browser replay to the layers that survive in the target artwork", () => {
+    const { state, store } = createStore();
+    const inheritedLayerId = state.activeLayerId;
+    store.recordOperation(
+      "draw.line",
+      { layerId: inheritedLayerId, from: { x: 0, y: 0 }, to: { x: 10, y: 10 } },
+      { ok: true },
+      state.snapshot(),
+      "agent",
+    );
+
+    state.createLayer("Paper", "L_cube_paper");
+    store.recordOperation(
+      "layer.create",
+      { name: "Paper" },
+      { layerId: "L_cube_paper" },
+      state.snapshot(),
+      "agent",
+    );
+    store.recordOperation(
+      "draw.rect",
+      { layerId: "L_cube_paper", x: 0, y: 0, w: 100, h: 100, fill: "#ffffff" },
+      { ok: true },
+      state.snapshot(),
+      "agent",
+    );
+
+    state.createLayer("Ink", "L_cube_ink");
+    store.recordOperation(
+      "layer.create",
+      { name: "Ink" },
+      { layerId: "L_cube_ink" },
+      state.snapshot(),
+      "agent",
+    );
+    store.recordOperation(
+      "draw.stroke",
+      { layerId: "L_cube_ink", points: [{ x: 5, y: 5 }] },
+      { ok: true },
+      state.snapshot(),
+      "agent",
+    );
+
+    state.deleteLayer(inheritedLayerId);
+    store.recordOperation(
+      "layer.delete",
+      { layerId: inheritedLayerId },
+      { ok: true },
+      state.snapshot(),
+      "agent",
+    );
+
+    const full = store.getReplaySnapshot();
+    const compact = store.getReplaySnapshot(undefined, { compactActiveLayers: true });
+
+    expect(full.operations).toHaveLength(6);
+    expect(compact.baseState.layers.map((layer) => layer.id)).toEqual(["L_cube_paper"]);
+    expect(compact.baseRaster).toEqual([]);
+    expect(compact.operations.map((operation) => operation.method)).toEqual([
+      "draw.rect",
+      "layer.create",
+      "draw.stroke",
+    ]);
+    expect(JSON.stringify(compact)).not.toContain(inheritedLayerId);
+    expect(compact.state.layers.map((layer) => layer.id)).toEqual(["L_cube_paper", "L_cube_ink"]);
+  });
+
+  it("starts compact replay with the earliest surviving layer", () => {
+    const { state, store } = createStore();
+    const inheritedLayerId = state.activeLayerId;
+
+    state.createLayer("Ink", "L_ink");
+    store.recordOperation(
+      "layer.create",
+      { name: "Ink" },
+      { layerId: "L_ink" },
+      state.snapshot(),
+      "agent",
+    );
+    store.recordOperation(
+      "canvas.fill",
+      { color: "#111111" },
+      { ok: true },
+      state.snapshot(),
+      "agent",
+    );
+
+    state.createLayer("Paper", "L_paper");
+    store.recordOperation(
+      "layer.create",
+      { name: "Paper" },
+      { layerId: "L_paper" },
+      state.snapshot(),
+      "agent",
+    );
+    state.reorder(["L_paper", "L_ink", inheritedLayerId]);
+    store.recordOperation(
+      "layer.reorder",
+      { layerIds: ["L_paper", "L_ink", inheritedLayerId] },
+      { ok: true },
+      state.snapshot(),
+      "agent",
+    );
+    state.deleteLayer(inheritedLayerId);
+    store.recordOperation(
+      "layer.delete",
+      { layerId: inheritedLayerId },
+      { ok: true },
+      state.snapshot(),
+      "agent",
+    );
+
+    const compact = store.getReplaySnapshot(undefined, { compactActiveLayers: true });
+
+    expect(compact.baseState.layers.map((layer) => layer.id)).toEqual(["L_ink"]);
+    expect(compact.operations.map((operation) => operation.method)).toEqual([
+      "canvas.fill",
+      "layer.create",
+      "layer.reorder",
+    ]);
+    expect(compact.operations.at(-1)?.params).toEqual({ layerIds: ["L_paper", "L_ink"] });
+    expect(compact.state.layers.map((layer) => layer.id)).toEqual(["L_paper", "L_ink"]);
+  });
+
   it("reports the checked-out branch even when its head commit was created elsewhere", () => {
     const { store } = createStore();
     store.createBranch("experiment");
