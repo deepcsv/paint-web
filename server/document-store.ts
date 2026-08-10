@@ -141,6 +141,114 @@ function normalizeOperation(
   return [{ method, params, result }];
 }
 
+type ReplayOptions = {
+  compactActiveLayers?: boolean;
+};
+
+/**
+ * Build a blank, native-operation replay containing only layers that survive
+ * in the target state. This is safe when every surviving layer has an
+ * auditable layer.create in the commit chain and no later raster/global layer
+ * mutation makes those creates insufficient as a reconstruction boundary.
+ */
+function compactActiveLayerReplay(
+  state: ServerStateSnapshot,
+  operations: DocumentOperation[],
+): Pick<DocumentReplaySnapshot, "baseState" | "baseRaster" | "operations"> | null {
+  const liveLayers = state.layers;
+  const liveIds = new Set(liveLayers.map((layer) => layer.id));
+  const lastCreateIndex = new Map<string, number>();
+
+  for (let index = 0; index < operations.length; index++) {
+    const operation = operations[index]!;
+    const layerId = (operation.params as { layerId?: unknown } | undefined)?.layerId;
+    if (operation.method === "layer.create" && typeof layerId === "string" && liveIds.has(layerId)) {
+      lastCreateIndex.set(layerId, index);
+    }
+  }
+
+  if (liveLayers.length === 0 || liveLayers.some((layer) => !lastCreateIndex.has(layer.id))) {
+    return null;
+  }
+
+  const replayStart = Math.min(...lastCreateIndex.values());
+  const baseLayerId = [...lastCreateIndex.entries()].find(([, index]) => index === replayStart)?.[0];
+  const baseLayer = structuredClone(liveLayers.find((layer) => layer.id === baseLayerId)!);
+  const created = new Set<string>([baseLayer.id]);
+  const compacted: DocumentOperation[] = [];
+
+  for (let index = replayStart; index < operations.length; index++) {
+    const operation = operations[index]!;
+    const params = (operation.params ?? {}) as Record<string, unknown>;
+    const method = operation.method;
+
+    if (
+      method === "snapshot.load"
+      || method === "canvas.import"
+      || method === "layer.merge"
+      || method === "layer.flatten"
+      || method === "canvas.resize"
+    ) {
+      return null;
+    }
+
+    if (method === "layer.create") {
+      const layerId = typeof params.layerId === "string" ? params.layerId : null;
+      if (!layerId || !liveIds.has(layerId) || lastCreateIndex.get(layerId) !== index) continue;
+      if (layerId === baseLayer.id) continue;
+      created.add(layerId);
+      compacted.push(structuredClone(operation));
+      continue;
+    }
+
+    if (method === "layer.reorder") {
+      const layerIds = Array.isArray(params.layerIds)
+        ? params.layerIds.filter((layerId): layerId is string => typeof layerId === "string" && created.has(layerId))
+        : [];
+      if (layerIds.length !== created.size || new Set(layerIds).size !== created.size) return null;
+      compacted.push({
+        ...structuredClone(operation),
+        params: { ...structuredClone(params), layerIds },
+      });
+      continue;
+    }
+
+    const layerId = typeof params.layerId === "string" ? params.layerId : null;
+    if (layerId) {
+      if (!liveIds.has(layerId)) continue;
+      const createIndex = lastCreateIndex.get(layerId)!;
+      if (index < createIndex || !created.has(layerId)) continue;
+      if (method === "layer.delete") return null;
+      compacted.push(structuredClone(operation));
+      continue;
+    }
+
+    if (method === "canvas.clear" || method === "canvas.fill") {
+      compacted.push(structuredClone(operation));
+      continue;
+    }
+
+    // Native drawing and layer/filter mutations are expected to identify a
+    // target layer. An unfamiliar target-less operation makes compaction
+    // ambiguous, so fall back to the complete historical replay.
+    if (method.startsWith("draw.") || method.startsWith("filter.") || method.startsWith("layer.")) {
+      return null;
+    }
+  }
+
+  if (compacted.length >= operations.length) return null;
+  return {
+    baseState: {
+      width: state.width,
+      height: state.height,
+      layers: [baseLayer],
+      activeLayerId: baseLayer.id,
+    },
+    baseRaster: [],
+    operations: compacted,
+  };
+}
+
 /**
  * Versioned canonical artwork document.
  *
@@ -291,7 +399,10 @@ export class DocumentStore {
     return result;
   }
 
-  getReplaySnapshot(commitId = this.currentCommitId): DocumentReplaySnapshot {
+  getReplaySnapshot(
+    commitId = this.currentCommitId,
+    options: ReplayOptions = {},
+  ): DocumentReplaySnapshot {
     const commit = this.getCommit(commitId);
     const chain: DocumentCommit[] = [];
     let cursor: DocumentCommit | null = commit;
@@ -314,6 +425,9 @@ export class DocumentStore {
     const operations = chain
       .slice(operationStart)
       .flatMap((item) => structuredClone(item.operations));
+    const compacted = options.compactActiveLayers
+      ? compactActiveLayerReplay(commit.state, operations)
+      : null;
     return {
       schemaVersion: 1,
       documentId: this.data.documentId,
@@ -323,10 +437,10 @@ export class DocumentStore {
       branch: commit.id === this.currentCommitId ? this.currentBranch : commit.branch,
       createdAt: this.data.createdAt,
       updatedAt: this.data.updatedAt,
-      baseState: cloneState(baseState),
+      baseState: compacted?.baseState ?? cloneState(baseState),
       state: cloneState(commit.state),
-      baseRaster: structuredClone(baseRaster),
-      operations,
+      baseRaster: compacted?.baseRaster ?? structuredClone(baseRaster),
+      operations: compacted?.operations ?? operations,
       replayable: this.data.baselineCaptured,
     };
   }

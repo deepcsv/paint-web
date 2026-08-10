@@ -171,6 +171,15 @@ function parsePoint2(s: string): { x: number; y: number } {
   return { x, y };
 }
 
+function parseSeed(value: string | undefined): number | undefined {
+  if (value === undefined) return undefined;
+  const seed = Number(value);
+  if (!Number.isInteger(seed) || seed < 0 || seed > 0xffff_ffff) {
+    throw new Error(`Invalid seed: ${value} (expected uint32)`);
+  }
+  return seed;
+}
+
 async function activeLayerId(opts: CliOpts): Promise<string | null> {
   return (await rpc<{ activeLayerId: string | null }>(opts, "canvas.getInfo")).activeLayerId;
 }
@@ -267,6 +276,7 @@ program
   .requiredOption("--color <c>", "Stroke color", "#000000")
   .requiredOption("--size <n>", "Stroke size", "8")
   .option("--opacity <n>", "Opacity 0..1", "1")
+  .option("--seed <uint32>", "Deterministic stroke seed")
   .requiredOption("--points <list>", 'Points "x,y[;x,y...]"')
   .action(async (cmdOpts) => {
     const opts = getOpts();
@@ -278,6 +288,7 @@ program
       size: parseFloat(cmdOpts.size),
       opacity: parseFloat(cmdOpts.opacity),
       points: parsePoints(cmdOpts.points),
+      ...(cmdOpts.seed !== undefined ? { seed: parseSeed(cmdOpts.seed) } : {}),
     });
     output(opts, result);
   });
@@ -959,7 +970,14 @@ program
         stats.ok++;
       } catch (e) {
         stats.err++;
-        const msg = e && typeof e === "object" && "message" in e ? (e as { message: string }).message : String(e);
+        const rawMessage = e && typeof e === "object" && "message" in e
+          ? (e as { message: unknown }).message
+          : undefined;
+        const msg = typeof rawMessage === "string"
+          ? rawMessage
+          : e && typeof e === "object"
+            ? JSON.stringify(e)
+            : String(e);
         console.error(`[line ${i + 1}] ${op.method} failed: ${msg}`);
         if (cmdOpts.stopOnError) break;
       }
@@ -1042,6 +1060,62 @@ program
     const result = await rpc(opts, "ops.replay", {
       toStep: parseInt(cmdOpts.toStep, 10),
       snapshot: cmdOpts.snapshot !== false,
+    });
+    output(opts, result);
+  });
+
+// ── brush list — list all 94 brush presets from 画世界 ───────────────────
+const brushCmd = program.command("brush").description("List and apply 画世界 brush presets");
+brushCmd
+  .command("list")
+  .option("--package <name>", "Filter by package name (e.g. 常规画笔)")
+  .action(async (cmdOpts) => {
+    const opts = getOpts();
+    const presets = await import("../src/brush/BrushPresets.js");
+    if (cmdOpts.package) {
+      const pkg = presets.PACKAGES.find((p) => p.name === cmdOpts.package);
+      if (!pkg) {
+        console.error(`Package "${cmdOpts.package}" not found. Available: ${presets.PACKAGES.map((p) => p.name).join(", ")}`);
+        process.exit(1);
+      }
+      output(opts, pkg);
+    } else {
+      output(opts, { packages: presets.PACKAGES, total: presets.ALL_BRUSHES.length });
+    }
+  });
+
+brushCmd
+  .command("apply")
+  .requiredOption("--id <brushId>", "Brush name (e.g. 铅笔) or base64 ID")
+  .requiredOption("--points <list>", 'Points "x,y[;x,y...]"')
+  .option("--color <c>", "Stroke color", "#000000")
+  .option("--size <n>", "Size override (0 = use preset default)", "0")
+  .option("--seed <uint32>", "Deterministic stroke seed")
+  .option("--eraser", "Force eraser mode", false)
+  .action(async (cmdOpts) => {
+    const opts = getOpts();
+    // Resolve brush name → id (accepts Chinese name or base64 ID)
+    const presets = await import("../src/brush/BrushPresets.js");
+    const preset = presets.getByNameOrId(cmdOpts.id);
+    if (preset.id === "default") {
+      console.error(`Brush not found: "${cmdOpts.id}". Use 'paint-cli brush list' to see available brushes.`);
+      process.exit(1);
+    }
+    console.error(`[brush] Using: ${preset.name} (id=${preset.id}, pkg=${preset.pkgName})`);
+
+    const layerId = (await rpc<{ activeLayerId: string | null }>(opts, "canvas.getInfo")).activeLayerId;
+    const sizeOverride = parseInt(cmdOpts.size, 10);
+    const result = await rpc(opts, "draw.stroke", {
+      layerId,
+      tool: cmdOpts.eraser ? "eraser" : "brush",
+      color: parseColor(cmdOpts.color),
+      size: sizeOverride > 0 ? sizeOverride : preset.width,
+      opacity: 1,
+      points: parsePoints(cmdOpts.points),
+      brushPresetId: preset.id,
+      brush: preset,
+      strokeVersion: 2,
+      ...(cmdOpts.seed !== undefined ? { seed: parseSeed(cmdOpts.seed) } : {}),
     });
     output(opts, result);
   });

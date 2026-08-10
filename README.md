@@ -1,6 +1,6 @@
 # paint-web
 
-A monolithic web painting app with a **native JSON-RPC harness for AI agents**. Open a browser to draw, or send commands over WebSocket to drive the canvas programmatically. Built as a single Node.js process.
+A deterministic web painting runtime with a **native JSON-RPC harness for AI agents**. Open a browser to draw, or send versioned operations over WebSocket to drive the canvas programmatically. The production runtime remains a single Node.js process.
 
 Inspired by reverse-engineering the 画世界 Android app — this project keeps only the single-player painting core (brush, shapes, fill, layers, filters, text) and adds a first-class agent interface.
 
@@ -87,6 +87,22 @@ The intended agent loop is now: upload stable assets, commit a coherent pass,
 measure the canvas, inspect a snapshot when needed, then refine from the same
 versioned document.
 
+## Deterministic brush kernel
+
+The current brush foundation is designed for genuine stroke-by-stroke drawing,
+not image-filter imitation:
+
+- `perfect-freehand` streamlines raw pointer/agent centerlines while preserving
+  explicit pen pressure and deriving a restrained velocity curve when pressure
+  is absent;
+- every new `draw.stroke` carries an unsigned PRNG seed and brush engine version;
+- first-party clients embed an immutable brush snapshot, so later preset tuning
+  cannot change historical replay pixels;
+- textured brushes fall back to deterministic procedural tooth/grain when an
+  external tip asset is unavailable;
+- stamp jitter, spacing, rotation, blend mode, erasing, and smearing are rendered
+  in isolated buffers and covered by executable Skia-backed pixel tests.
+
 ## CLI
 
 ```bash
@@ -96,6 +112,8 @@ npm run cli:build
 # Or run via tsx without building
 npm run cli -- info
 npm run cli -- stroke --brush --color "#ff0000" --size 8 --points "0,0;100,100"
+npm run cli -- stroke --brush --seed 42 --color "#222222" --size 8 --points "0,0;100,100"
+npm run cli -- brush apply --id "铅笔" --seed 42 --points "80,80;320,160"
 npm run cli -- rect --x 10 --y 10 --w 80 --h 60 --stroke "#000000" --fill "#0099ff"
 npm run cli -- text --x 50 --y 50 --content "hello" --size 32
 npm run cli -- fill --x 50 --y 50 --color "#ffff00"
@@ -152,16 +170,18 @@ Environment variables:
 
 ## Tech stack
 
-- **Node.js 22+** with built-in `http` and `node:crypto`
-- **ws** for WebSocket server
-- **Vite 5** for client bundling + dev middleware
-- **TypeScript 5** strict mode throughout
+- **Node.js 24.14+** with built-in `http`, Web Crypto, and `node:crypto`
+- **ws 8.21** for the WebSocket server
+- **Vite 8** (Rolldown-powered) for client bundling + dev middleware
+- **TypeScript 7** strict mode throughout
 - **vanilla TS** client (no React/Vue — keep it small)
-- **zod** for runtime RPC validation (shared between client/server/CLI)
-- **commander** for CLI argument parsing
-- **vitest** for testing
+- **Zod 4** for runtime RPC validation (shared between client/server/CLI)
+- **Commander 15** for CLI argument parsing
+- **Vitest 4 + @napi-rs/canvas** for unit and real Canvas2D pixel testing
+- **perfect-freehand** for pressure-aware centerline planning
 
-No native modules. No database. No message broker. Single process.
+No production native modules, database, or message broker. The optional native
+Skia binding is development-only and gives brush regressions a real pixel oracle.
 
 ## Project layout
 
@@ -182,7 +202,8 @@ paint-web/
 │   └── protocol.ts     # All RPC types + zod schemas + method registry
 ├── src/                # Browser client
 │   ├── main.ts         # App entry
-│   ├── canvas/         # LayerStack, StrokeEngine, CanvasAnalyzer, ...
+│   ├── brush/          # Presets, immutable brush types, stroke planner
+│   ├── canvas/         # LayerStack, StampEngine, CanvasAnalyzer, ...
 │   ├── input/          # PointerHandler
 │   ├── ui/             # Toolbar, ColorPicker, LayerPanel, ...
 │   └── net/            # WSClient

@@ -340,7 +340,7 @@ export function attachWsServer(deps: WsServerDeps): void {
           serverEventSeq: events.currentSeq(),
           state: state.getInfo({ undo: 0, redo: 0 }),
           ...(meta.role === "browser" && documentStore.baselineCaptured
-            ? { document: documentStore.getReplaySnapshot() }
+            ? { document: documentStore.getReplaySnapshot(undefined, { compactActiveLayers: true }) }
             : {}),
         };
         if (rpcReq.id !== undefined) {

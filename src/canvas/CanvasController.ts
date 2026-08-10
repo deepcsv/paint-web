@@ -1,10 +1,13 @@
 import { LayerStack } from "./LayerStack.js";
 import { HistoryStack } from "./HistoryStack.js";
 import { StrokeEngine } from "./StrokeEngine.js";
+import { renderStroke as renderStampStroke } from "./StampEngine.js";
 import { ShapeRenderer } from "./ShapeRenderer.js";
 import { floodFill } from "./FillEngine.js";
 import { FilterEngine } from "./FilterEngine.js";
 import { analyzePixels, samplePixels } from "./CanvasAnalyzer.js";
+import { getById as getPresetById } from "../brush/BrushPresets.js";
+import { getTexture } from "../brush/TextureLoader.js";
 import type {
   CanvasAnalyzeParams,
   CanvasAnalyzeResult,
@@ -45,6 +48,8 @@ export class CanvasController {
   readonly renderCanvas: HTMLCanvasElement;
   private renderCtx: CanvasRenderingContext2D;
   private renderScheduled = false;
+  private renderSuspendDepth = 0;
+  private historyEnabled = true;
   private onAfterChange?: () => void;
 
   constructor(width: number, height: number, renderCanvas: HTMLCanvasElement) {
@@ -64,10 +69,12 @@ export class CanvasController {
   }
 
   private requestRender(): void {
+    if (this.renderSuspendDepth > 0) return;
     if (this.renderScheduled) return;
     this.renderScheduled = true;
     requestAnimationFrame(() => {
       this.renderScheduled = false;
+      if (this.renderSuspendDepth > 0) return;
       this.layers.composite(this.renderCtx);
     });
   }
@@ -87,8 +94,37 @@ export class CanvasController {
   }
 
   private snapshotForUndo(layerId: LayerId): void {
+    if (!this.historyEnabled) return;
     const data = this.layers.getLayerImageData(layerId);
     if (data) this.history.pushBeforeChange(layerId, data);
+  }
+
+  /**
+   * Apply a deterministic document replay without allocating a full-canvas
+   * undo snapshot for every historical operation. A detailed artwork can
+   * contain thousands of strokes; replay history is already preserved by the
+   * canonical document log, so duplicating it as ImageData is both redundant
+   * and capable of exhausting the browser's memory.
+   */
+  async withoutHistory<T>(operation: () => T | Promise<T>): Promise<T> {
+    const previouslyEnabled = this.historyEnabled;
+    this.historyEnabled = false;
+    try {
+      return await operation();
+    } finally {
+      this.historyEnabled = previouslyEnabled;
+    }
+  }
+
+  /** Defer expensive full-layer compositing until a mutation batch is done. */
+  async withoutIntermediateRendering<T>(operation: () => T | Promise<T>): Promise<T> {
+    this.renderSuspendDepth += 1;
+    try {
+      return await operation();
+    } finally {
+      this.renderSuspendDepth -= 1;
+      if (this.renderSuspendDepth === 0) this.requestRender();
+    }
   }
 
   private getCtx(layerId: LayerId): AnyCtx | null {
@@ -308,19 +344,29 @@ export class CanvasController {
     this.snapshotForUndo(params.layerId);
     const ctx = this.getCtx(params.layerId);
     if (!ctx) return;
-    StrokeEngine.drawStroke(
-      ctx,
-      {
-        tool: params.tool,
-        color: params.color,
-        size: params.size,
-        opacity: params.opacity,
-      },
-      params.points,
-    );
+
+    // Embedded brush snapshots make replay independent of future preset edits.
+    // ID-only operations remain supported for v1 documents and compact clients.
+    if (params.brush || params.brushPresetId) {
+      const preset = params.brush ?? getPresetById(params.brushPresetId!);
+      const textures: { shape?: ImageBitmap; surface?: ImageBitmap } = {};
+      if (preset.shapeTexture) textures.shape = getTexture(preset.shapeTexture);
+      if (preset.surfaceTexture) textures.surface = getTexture(preset.surfaceTexture);
+      const sizeMult = params.size / Math.max(preset.width, 1);
+      renderStampStroke(ctx, preset, params.points, params.color, textures, sizeMult, {
+        forceEraser: params.tool === "eraser",
+        opacityOverride: params.opacity,
+        seed: params.seed,
+        smearSource: Math.abs(preset.smearStrength) > 0.001 ? ctx : undefined,
+      });
+    } else {
+      StrokeEngine.drawStroke(
+        ctx,
+        { tool: params.tool, color: params.color, size: params.size, opacity: params.opacity },
+        params.points,
+      );
+    }
     this.requestRender();
-    // No onAfterChange: pixel-only ops don't affect layer metadata,
-    // and triggering UI refresh causes flex reflow → canvas flicker.
   }
 
   line(params: DrawLineParams): void {

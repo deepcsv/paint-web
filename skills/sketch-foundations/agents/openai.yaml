@@ -1,0 +1,4 @@
+interface:
+  display_name: "Sketch Foundations"
+  short_description: "Construct and audit native-stroke geometric sketches"
+  default_prompt: "Use $sketch-foundations to construct, hatch, and objectively validate an auditable geometric or observational sketch."

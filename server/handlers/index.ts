@@ -95,7 +95,7 @@ export function registerHandlers(deps: HandlerDeps): void {
 
   async function replayCommit(commitId: string): Promise<void> {
     await ensureDocumentBaseline();
-    const snapshot = documentStore.getReplaySnapshot(commitId);
+    const snapshot = documentStore.getReplaySnapshot(commitId, { compactActiveLayers: true });
     if (!snapshot.replayable) {
       throw RpcError.documentConflict("Document baseline has not been captured");
     }
@@ -412,24 +412,16 @@ export function registerHandlers(deps: HandlerDeps): void {
   router.register("draw.batch", async (params) => {
     const raw = (params as { operations: { method: string; params: unknown }[] }).operations;
     const operations = validateDrawBatchOperations(raw);
-    const results: unknown[] = [];
+    // Validate the complete payload before the renderer sees any mutation.
+    // The browser executes the validated batch under one history/render guard,
+    // avoiding one full-layer undo copy and one WS round-trip per stroke.
     for (const op of operations) {
-      try {
-        assertLayerTarget(op.params, op.method.startsWith("draw."));
-        if (op.method === "draw.image") {
-          assertAsset((op.params as { assetId: string }).assetId);
-        }
-        await primary.exec(op.method, op.params);
-        results.push({ ok: true });
-      } catch (err) {
-        results.push(
-          err instanceof RpcError
-            ? err.toObject()
-            : RpcError.internal(String(err)).toObject(),
-        );
+      assertLayerTarget(op.params, op.method.startsWith("draw."));
+      if (op.method === "draw.image") {
+        assertAsset((op.params as { assetId: string }).assetId);
       }
     }
-    return { results };
+    return primary.exec("draw.batch", { operations });
   });
 
   // -------------------------------------------------------------------------
@@ -613,9 +605,14 @@ export function registerHandlers(deps: HandlerDeps): void {
   // -------------------------------------------------------------------------
 
   router.register("doc.get", (params) => {
-    const commitId = (params as { commitId?: string } | undefined)?.commitId;
+    const options = params as {
+      commitId?: string;
+      compactActiveLayers?: boolean;
+    } | undefined;
     try {
-      return documentStore.getReplaySnapshot(commitId);
+      return documentStore.getReplaySnapshot(options?.commitId, {
+        compactActiveLayers: options?.compactActiveLayers === true,
+      });
     } catch (error) {
       rethrowDocumentError(error);
     }
@@ -660,7 +657,12 @@ export function registerHandlers(deps: HandlerDeps): void {
     const { name } = params as { name: string };
     try {
       const target = documentStore.branchTarget(name);
-      await replayCommit(target);
+      // Creating a branch at HEAD and immediately switching to it requires no
+      // renderer work. Avoid exporting every full-resolution layer merely to
+      // replay the exact commit that is already on screen.
+      if (target !== documentStore.currentCommitId) {
+        await replayCommit(target);
+      }
       documentStore.applyBranchSwitch(name);
       return documentStore.restoreResult();
     } catch (error) {

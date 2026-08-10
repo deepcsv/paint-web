@@ -70,6 +70,38 @@ describe("headless SVG renderer", () => {
     expect(rendered.warnings).toContain("draw.fill flood-fill is not represented in SVG preview");
   });
 
+  it("preserves deterministic brush metadata in stroke previews", () => {
+    const state = new ServerState();
+    const store = new DocumentStore(state.snapshot());
+    const layerId = state.activeLayerId;
+    store.captureBaseline([{ id: layerId, png: "" }]);
+    store.recordOperation(
+      "draw.stroke",
+      {
+        layerId,
+        tool: "brush",
+        color: "#222222",
+        size: 8,
+        opacity: 1,
+        points: [{ x: 1, y: 2 }, { x: 30, y: 40 }],
+        brushPresetId: "graphite",
+        seed: 42,
+        strokeVersion: 2,
+      },
+      null,
+      state.snapshot(),
+      "agent",
+    );
+
+    const rendered = renderDocumentToSvg(store.getReplaySnapshot());
+    expect(rendered.svg).toContain('data-brush="graphite"');
+    expect(rendered.svg).toContain('data-seed="42"');
+    expect(rendered.svg).toContain('data-stroke-version="2"');
+    expect(rendered.warnings).toContain(
+      "draw.stroke brush graphite is approximated as an SVG polyline",
+    );
+  });
+
   it("renders P1 paths, gradients, immutable images and affine transforms", () => {
     const state = new ServerState();
     const store = new DocumentStore(state.snapshot());

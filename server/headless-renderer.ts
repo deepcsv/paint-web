@@ -301,18 +301,30 @@ export function renderDocumentToSvg(
         break;
       case "draw.stroke": {
         if (!layer) break;
-        if (params.tool === "eraser") {
-          warn("draw.stroke eraser is not represented in SVG preview");
-          break;
-        }
         const points = Array.isArray(params.points)
           ? params.points
               .map((point) => point as Record<string, unknown>)
               .map((point) => `${number(point.x)},${number(point.y)}`)
               .join(" ")
           : "";
+        const embeddedBrush = params.brush && typeof params.brush === "object"
+          ? params.brush as Record<string, unknown>
+          : undefined;
+        const brushId = embeddedBrush?.id ?? params.brushPresetId;
+        const brushAttrs = [
+          attr("data-brush", brushId),
+          attr("data-seed", params.seed),
+          attr("data-stroke-version", params.strokeVersion),
+        ].join("");
+        // Eraser: represent as dashed white line so it's visible in SVG preview
+        const isEraser = params.tool === "eraser";
+        if (isEraser) warn("draw.stroke eraser is approximated in SVG preview");
+        if (brushId) warn(`draw.stroke brush ${String(brushId)} is approximated as an SVG polyline`);
+        const strokeColor = isEraser ? "#ffffff" : escapeXml(params.color);
+        const dashAttr = isEraser ? ` stroke-dasharray="${number(params.size, 4)},${number(params.size, 2)}"` : "";
+        const opacityVal = isEraser ? 0.6 : params.opacity;
         layer.elements.push(
-          `<polyline points="${points}" fill="none" stroke="${escapeXml(params.color)}" stroke-width="${number(params.size, 1)}" stroke-linecap="round" stroke-linejoin="round"${attr("opacity", params.opacity)}/>` ,
+          `<polyline points="${points}" fill="none" stroke="${strokeColor}" stroke-width="${number(params.size, 1)}" stroke-linecap="round" stroke-linejoin="round"${attr("opacity", opacityVal)}${dashAttr} data-eraser="${isEraser}"${brushAttrs}/>` ,
         );
         break;
       }

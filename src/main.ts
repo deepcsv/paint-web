@@ -3,13 +3,17 @@ import { CanvasController } from "./canvas/CanvasController.js";
 import { PointerHandler, type Tool } from "./input/PointerHandler.js";
 import { Toolbar } from "./ui/Toolbar.js";
 import { ColorPicker } from "./ui/ColorPicker.js";
+import { BrushPanel } from "./ui/BrushPanel.js";
+import { preloadTextures, getTexture } from "./brush/TextureLoader.js";
+import type { BrushPreset } from "./brush/BrushTypes.js";
+import { renderStrokeLive } from "./canvas/StampEngine.js";
 import { SizeSlider } from "./ui/SizeSlider.js";
 import { LayerPanel } from "./ui/LayerPanel.js";
 import { StatusBar } from "./ui/StatusBar.js";
 import type {
   DocumentReplaySnapshot,
   DocumentStateSnapshot,
-  DrawStrokeParams,
+  DrawStrokeInput,
 } from "../shared/protocol.js";
 
 const CLIENT_ID_KEY = "paint-web.clientId";
@@ -35,6 +39,24 @@ const canvas = document.getElementById("canvas") as HTMLCanvasElement;
 const toolbar = new Toolbar(document.getElementById("toolbar")!);
 const colorPicker = new ColorPicker(document.getElementById("color-picker")!);
 const sizeSlider = new SizeSlider(document.getElementById("size-slider")!);
+const brushPanel = new BrushPanel(document.getElementById("brush-panel")!);
+
+// Active brush preset — BrushPanel initializes this to the pencil preset.
+let activeBrushPreset: BrushPreset | null = null;
+
+function createStrokeSeed(): number {
+  const value = new Uint32Array(1);
+  crypto.getRandomValues(value);
+  return value[0]!;
+}
+
+// Brush panel selection
+brushPanel.onChange((preset) => {
+  activeBrushPreset = preset;
+  const textureNames = [preset.shapeTexture, preset.surfaceTexture].filter(Boolean);
+  if (textureNames.length > 0) void preloadTextures(textureNames);
+  console.log("[brush] selected:", preset.name, "id:", preset.id);
+});
 const layerPanel = new LayerPanel(document.getElementById("layer-panel")!);
 const statusBar = new StatusBar(document.getElementById("status-bar")!);
 const actions = document.getElementById("actions")!;
@@ -86,8 +108,10 @@ interface PendingStroke {
   color: string;
   size: number;
   opacity: number;
-  points: { x: number; y: number; pressure: number }[];
+  points: { x: number; y: number; pressure?: number }[];
   layerId: string | null;
+  brush: BrushPreset | null;
+  seed: number;
 }
 
 let pendingStroke: PendingStroke | null = null;
@@ -173,6 +197,28 @@ function drawShapePreview(tool: "line" | "rect" | "circle" | "ellipse", a: { x: 
 function drawStrokePreview(stroke: PendingStroke): void {
   clearOverlay();
   if (stroke.points.length === 0) return;
+
+  // If a brush preset is active, use the stamp engine for live preview.
+  // This gives a true representation of what the committed stroke will look like.
+  if (stroke.brush) {
+    const preset = stroke.brush;
+    const textures: { shape?: ImageBitmap; surface?: ImageBitmap } = {};
+    if (preset.shapeTexture) textures.shape = getTexture(preset.shapeTexture);
+    if (preset.surfaceTexture) textures.surface = getTexture(preset.surfaceTexture);
+    const sizeMult = stroke.size / Math.max(preset.width, 1);
+    const smearSource = Math.abs(preset.smearStrength) > 0.001 && stroke.layerId
+      ? controller.layers.getLayer(stroke.layerId)?.ctx
+      : undefined;
+    renderStrokeLive(overlayCtx, preset, stroke.points, stroke.color, textures, sizeMult, {
+      forceEraser: stroke.tool === "eraser",
+      opacityOverride: stroke.opacity,
+      seed: stroke.seed,
+      smearSource,
+    });
+    return;
+  }
+
+  // Fallback: simple line preview when no preset is selected
   overlayCtx.save();
   overlayCtx.globalAlpha = stroke.tool === "eraser" ? 0.7 : stroke.opacity;
   overlayCtx.strokeStyle = stroke.tool === "eraser" ? "#ffffff" : stroke.color;
@@ -277,6 +323,8 @@ const pointer = new PointerHandler({
       opacity: 1,
       points: [p],
       layerId,
+      brush: activeBrushPreset,
+      seed: createStrokeSeed(),
     };
   },
   onStrokeSegment: (p) => {
@@ -367,13 +415,20 @@ const pointer = new PointerHandler({
     if (pendingStroke) {
       clearOverlay();
       const pts = pendingStroke.points;
-      const params: DrawStrokeParams = {
+      const params: DrawStrokeInput = {
         layerId: pendingStroke.layerId!,
         tool: pendingStroke.tool,
         color: pendingStroke.color,
         size: pendingStroke.size,
         opacity: pendingStroke.opacity,
         points: pts,
+        seed: pendingStroke.seed,
+        strokeVersion: 2,
+        // Store an immutable brush snapshot so future preset tuning cannot
+        // change the pixels produced by replaying this operation.
+        ...(pendingStroke.brush
+          ? { brushPresetId: pendingStroke.brush.id, brush: pendingStroke.brush }
+          : {}),
       };
       void wsClient.request("draw.stroke", params).catch(console.warn);
       pendingStroke = null;
@@ -383,13 +438,6 @@ const pointer = new PointerHandler({
   onMove: (p) => {
     statusBar.setPos(p.x, p.y);
   },
-});
-
-// Allow shape tools to use start + current pos
-canvas.addEventListener("pointermove", (e: PointerEvent) => {
-  if (!shapeStart) return;
-  // Live preview of shape (TODO: draw to a temp overlay). For v1, no preview.
-  void e;
 });
 
 // ---------------------------------------------------------------------------
@@ -437,7 +485,9 @@ const internalHandlers = new Map<string, (params: unknown) => Promise<unknown> |
 function wrapHandler<T>(name: string, fn: (p: T) => unknown): (p: unknown) => unknown {
   return (p: unknown) => {
     const params = p as { layerId?: string };
-    console.log(`[primary] exec ${name}`, params?.layerId ? `layer=${params.layerId}` : "(no layer)");
+    if (!name.startsWith("draw.")) {
+      console.log(`[primary] exec ${name}`, params?.layerId ? `layer=${params.layerId}` : "(no layer)");
+    }
     return fn(p as T);
   };
 }
@@ -500,6 +550,37 @@ internalHandlers.set("draw.setPixel", (p) => controller.setPixel(p as never));
 internalHandlers.set("draw.path", (p) => controller.path(p as never));
 internalHandlers.set("draw.gradient", (p) => controller.gradient(p as never));
 internalHandlers.set("draw.image", (p) => controller.image(p as never));
+internalHandlers.set("draw.batch", async (p) => {
+  const { operations } = p as { operations: { method: string; params: unknown }[] };
+  const results: ({ ok: true } | { code: number; message: string })[] = [];
+  await controller.withoutHistory(() =>
+    controller.withoutIntermediateRendering(async () => {
+      for (const [index, operation] of operations.entries()) {
+        const handler = operation.method === "draw.batch"
+          ? undefined
+          : internalHandlers.get(operation.method);
+        if (!handler) {
+          results.push({ code: -32601, message: `No handler for ${operation.method}` });
+        } else {
+          try {
+            await handler(operation.params);
+            results.push({ ok: true });
+          } catch (error) {
+            results.push({
+              code: -32603,
+              message: error instanceof Error ? error.message : String(error),
+            });
+          }
+        }
+        if ((index + 1) % 24 === 0) {
+          await new Promise<void>((resolve) => setTimeout(resolve, 0));
+        }
+      }
+    }),
+  );
+  refreshLayerPanel();
+  return { results };
+});
 internalHandlers.set("history.undo", (p) => controller.undo(p as never));
 internalHandlers.set("history.redo", (p) => controller.redo(p as never));
 internalHandlers.set("history.goto", (p) => controller.goto(p as never));
@@ -588,17 +669,27 @@ internalHandlers.set("document.restoreRaster", async (params) => {
 internalHandlers.set("document.replay", async (params) => {
   const snapshot = params as DocumentReplaySnapshot;
   if (!snapshot.replayable) throw new Error("Document has no captured pixel baseline");
-  await restoreRasterState(snapshot.baseState, snapshot.baseRaster);
   const warnings: string[] = [];
-  for (const operation of snapshot.operations) {
-    const handler = internalHandlers.get(operation.method);
-    if (!handler || operation.method.startsWith("document.")) {
-      warnings.push(`Skipped unsupported replay operation: ${operation.method}`);
-      continue;
-    }
-    await handler(operation.params);
-  }
-  controller.reconcileFromServer(snapshot.state.layers, snapshot.state.activeLayerId);
+  await controller.withoutHistory(() =>
+    controller.withoutIntermediateRendering(async () => {
+      await restoreRasterState(snapshot.baseState, snapshot.baseRaster);
+      for (const [index, operation] of snapshot.operations.entries()) {
+        const handler = internalHandlers.get(operation.method);
+        if (!handler || operation.method.startsWith("document.")) {
+          warnings.push(`Skipped unsupported replay operation: ${operation.method}`);
+          continue;
+        }
+        await handler(operation.params);
+        // Large native-brush documents can contain thousands of operations.
+        // Yield periodically so WebSocket heartbeats and browser watchdogs stay
+        // responsive while retaining a single final composite.
+        if ((index + 1) % 24 === 0) {
+          await new Promise<void>((resolve) => setTimeout(resolve, 0));
+        }
+      }
+      controller.reconcileFromServer(snapshot.state.layers, snapshot.state.activeLayerId);
+    }),
+  );
   controller.clearHistory();
   controller.triggerRender();
   refreshLayerPanel();
@@ -615,7 +706,13 @@ async function restoreRasterState(
   }
   controller.reconcileFromServer(state.layers, state.activeLayerId);
   controller.clear({});
+  const stateLayerIds = new Set(state.layers.map((layer) => layer.id));
   for (const layer of rasterLayers) {
+    // A baseline captured by an older browser can contain its throwaway local
+    // bootstrap layer even though that id was never part of the canonical
+    // base state. It cannot contribute to the document and must not abort an
+    // otherwise valid native-operation replay.
+    if (!stateLayerIds.has(layer.id)) continue;
     const blob = base64PngToBlob(layer.png);
     const restored = await controller.layers.loadIntoLayer(layer.id, blob);
     if (!restored) throw new Error(`Unable to restore raster layer ${layer.id}`);
@@ -731,10 +828,26 @@ void wsClient.connect();
 // Apply events from other clients (for secondary browsers)
 // ---------------------------------------------------------------------------
 async function applyRemoteEvent(type: string, data: unknown): Promise<void> {
+  if (type === "draw.batched") {
+    const event = (data ?? {}) as {
+      method?: string;
+      params?: { operations?: { method: string; params: unknown }[] };
+      result?: { results?: ({ ok?: boolean } | unknown)[] };
+    };
+    const operations = event.params?.operations ?? [];
+    const results = event.result?.results ?? [];
+    const successful = operations.filter((_, index) => {
+      const result = results[index];
+      return Boolean(result && typeof result === "object" && (result as { ok?: boolean }).ok === true);
+    });
+    if (successful.length > 0) {
+      await internalHandlers.get("draw.batch")?.({ operations: successful });
+    }
+    return;
+  }
   if (
     type === "transaction.committed" ||
     type === "document.restored" ||
-    type === "draw.batched" ||
     type === "snapshot.loaded" ||
     type === "canvas.imported" ||
     type === "history.undone" ||
@@ -762,7 +875,9 @@ async function applyRemoteEvent(type: string, data: unknown): Promise<void> {
 
 async function syncCanonicalDocument(): Promise<void> {
   try {
-    const snapshot = await wsClient.request<DocumentReplaySnapshot>("doc.get", {});
+    const snapshot = await wsClient.request<DocumentReplaySnapshot>("doc.get", {
+      compactActiveLayers: true,
+    });
     if (snapshot.replayable) await internalHandlers.get("document.replay")?.(snapshot);
   } catch (error) {
     console.warn("[document sync] failed:", error);

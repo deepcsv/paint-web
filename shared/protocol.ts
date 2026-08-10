@@ -83,6 +83,90 @@ export const Point = z.object({
 });
 export type Point = z.infer<typeof Point>;
 
+/**
+ * Immutable rendering snapshot for a stamp brush.
+ *
+ * New stroke operations embed this object so replay does not change when a
+ * named preset is tuned later. `brushPresetId` remains supported for older
+ * documents and compact third-party clients.
+ */
+export const BrushDefinition = z.object({
+  id: z.string().min(1).max(128),
+  name: z.string().min(1).max(128),
+  pkgName: z.string().min(1).max(128),
+  width: z.number().positive().max(500),
+  smallWidth: z.number().min(0).max(500),
+  dynamicWidth: z.number().min(0).max(4),
+  minWidth: z.number().min(0).max(500),
+  maxWidth: z.number().positive().max(500),
+  alpha: z.number().min(0).max(1),
+  smallAlpha: z.number().min(0).max(1),
+  dynamicAlpha: z.number().min(0).max(4),
+  brushFlow: z.number().min(0).max(1),
+  smallBrushFlow: z.number().min(0).max(1),
+  dynamicBrushFlow: z.number().min(0).max(4),
+  spacing: z.number().positive().max(4),
+  dynamicSpa: z.number().min(0).max(4),
+  hardness: z.number().min(0).max(1),
+  roundness: z.number().positive().max(1),
+  rotation: z.number().min(-36000).max(36000),
+  dynamicRot: z.number().min(0).max(36000),
+  rotFlowFinger: z.boolean(),
+  useShape: z.boolean(),
+  shapeTexture: z.string().max(128),
+  useTex: z.boolean(),
+  surfaceTexture: z.string().max(128),
+  texScale: z.number().positive().max(64),
+  reverseTex: z.boolean(),
+  reverseShape: z.boolean(),
+  eraser: z.boolean(),
+  pixelpen: z.boolean(),
+  square: z.boolean(),
+  supportPressure: z.boolean(),
+  pressReverse: z.boolean(),
+  rgbToAlpha: z.boolean(),
+  smearStrength: z.number().min(-4).max(4),
+  hollowVal: z.number().min(0).max(1),
+  depth: z.number().min(0).max(100),
+  blendType: z.union([z.literal(0), z.literal(1), z.literal(2), z.literal(3)]),
+});
+export type BrushDefinition = z.infer<typeof BrushDefinition>;
+
+type StrokeSeedInput = {
+  layerId: string;
+  tool: string;
+  color: string;
+  size: number;
+  opacity: number;
+  points: Point[];
+  brushPresetId?: string;
+  brush?: BrushDefinition;
+};
+
+/** Stable FNV-1a seed for clients that omit an explicit per-stroke seed. */
+export function deriveStrokeSeed(stroke: StrokeSeedInput): number {
+  const pointKey = stroke.points
+    .map((point) =>
+      `${point.x.toFixed(3)},${point.y.toFixed(3)},${point.pressure?.toFixed(4) ?? "auto"}`,
+    )
+    .join(";");
+  const input = [
+    stroke.layerId,
+    stroke.tool,
+    stroke.color,
+    stroke.size.toFixed(4),
+    stroke.opacity.toFixed(4),
+    stroke.brush?.id ?? stroke.brushPresetId ?? "legacy",
+    pointKey,
+  ].join("|");
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < input.length; index++) {
+    hash ^= input.charCodeAt(index);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return hash >>> 0;
+}
+
 export const Rect = z.object({
   x: z.number(),
   y: z.number(),
@@ -350,14 +434,27 @@ export type LayerTransformParams = z.infer<typeof LayerTransformParams>;
 // draw.* methods
 // ---------------------------------------------------------------------------
 
-export const DrawStrokeParams = z.object({
+const DrawStrokeInput = z.object({
   layerId: LayerId,
   tool: z.enum(["brush", "eraser"]),
   color: Color.default("#000000"),
   size: z.number().positive().max(500),
   opacity: z.number().min(0).max(1).default(1),
   points: z.array(Point).min(1),
+  /** Legacy/compact preset reference. New first-party clients also embed `brush`. */
+  brushPresetId: z.string().min(1).max(128).optional(),
+  /** Immutable brush parameters used for exact replay across preset revisions. */
+  brush: BrushDefinition.optional(),
+  /** Explicit PRNG seed. If omitted, validation derives one from stable stroke input. */
+  seed: z.number().int().min(0).max(0xffff_ffff).optional(),
+  /** Version of the deterministic stamp/path algorithm used by this operation. */
+  strokeVersion: z.literal(2).default(2),
 });
+export const DrawStrokeParams = DrawStrokeInput.transform((params) => ({
+  ...params,
+  seed: params.seed ?? deriveStrokeSeed(params),
+}));
+export type DrawStrokeInput = z.input<typeof DrawStrokeParams>;
 export type DrawStrokeParams = z.infer<typeof DrawStrokeParams>;
 
 export const DrawLineParams = z.object({
@@ -760,7 +857,10 @@ export const TransactionExecuteResult = z.object({
 export type TransactionExecuteResult = z.infer<typeof TransactionExecuteResult>;
 
 export const DocumentGetParams = z
-  .object({ commitId: z.string().optional() })
+  .object({
+    commitId: z.string().optional(),
+    compactActiveLayers: z.boolean().optional(),
+  })
   .optional();
 export const DocumentHistoryParams = z
   .object({ limit: z.number().int().positive().max(1000).default(100) })
