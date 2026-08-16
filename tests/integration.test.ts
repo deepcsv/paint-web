@@ -46,7 +46,7 @@ beforeAll(async () => {
   assetStore = new AssetStore(assetDirectory);
   await assetStore.init();
   const events = new EventBus(wss);
-  primary = new PrimaryClient();
+  primary = new PrimaryClient({ noPrimaryGraceMs: 0 });
   const opLog = new (await import("../server/op-log.js")).OpLog({ persist: false });
   const router = new Router();
   const documentStore = new DocumentStore(state.snapshot());
@@ -491,6 +491,51 @@ describe("RPC harness", () => {
     ).toEqual(["draw.path", "draw.image", "layer.transform"]);
     expect(rendered.digest).toMatch(/^[a-f0-9]{64}$/);
     expect(rendered.warnings).toEqual([]);
+
+    await agent.close();
+    await browser.close();
+  });
+});
+
+describe("RPC harness", () => {
+  it("starts a fresh document via doc.new with empty history", async () => {
+    const browser = makeClient("browser");
+    await browser.connect();
+    const agent = makeClient("agent");
+    await agent.connect();
+
+    // Accumulate some history first.
+    await agent.rpc("layer.create", { name: "Old", layerId: "L_docnew_old" });
+    await agent.rpc("layer.create", { name: "Older", layerId: "L_docnew_older" });
+    const before = await agent.rpc<{ historyLength: { undo: number }; layers: { id: string }[] }>(
+      "canvas.getInfo",
+    );
+    expect(before.historyLength.undo).toBeGreaterThan(0);
+    const beforeDoc = await agent.rpc<{ documentId: string }>("doc.get", {});
+
+    const restored = await agent.rpc<{ commitId: string }>("doc.new", { width: 640, height: 480 });
+    expect(restored.commitId).toBeTruthy();
+
+    const after = await agent.rpc<{
+      width: number;
+      height: number;
+      historyLength: { undo: number; redo: number };
+      layers: { id: string }[];
+    }>("canvas.getInfo");
+    expect(after.width).toBe(640);
+    expect(after.height).toBe(480);
+    expect(after.historyLength.undo).toBe(0);
+    expect(after.historyLength.redo).toBe(0);
+    expect(after.layers).toHaveLength(1);
+    expect(after.layers[0].id).not.toBe("L_docnew_old");
+
+    // The reset document is a brand-new identity.
+    const afterDoc = await agent.rpc<{ documentId: string }>("doc.get", {});
+    expect(afterDoc.documentId).not.toBe(beforeDoc.documentId);
+
+    // Drawing on the fresh document keeps the pipeline healthy.
+    const fill = await agent.rpc("canvas.fill", { color: "#336699", layerId: after.layers[0].id });
+    expect(fill).toBeTruthy();
 
     await agent.close();
     await browser.close();

@@ -17,7 +17,7 @@ export interface RectOpts {
   w: number;
   h: number;
   stroke?: string;
-  fill?: string;
+  fill?: string | { gradient: unknown };
   strokeWidth: number;
   opacity: number;
 }
@@ -63,7 +63,7 @@ export class ShapeRenderer {
     ctx.save();
     ctx.globalAlpha = opts.opacity;
     if (opts.fill) {
-      ctx.fillStyle = opts.fill;
+      ctx.fillStyle = toFillStyle(ctx, opts.fill as string | { gradient: never });
       ctx.fillRect(opts.x, opts.y, opts.w, opts.h);
     }
     if (opts.stroke && opts.strokeWidth > 0) {
@@ -140,6 +140,11 @@ export class ShapeRenderer {
 
   static path(ctx: AnyCtx, opts: DrawPathParams): void {
     ctx.save();
+    if (opts.clip?.length) {
+      ctx.beginPath();
+      tracePathCommands(ctx, opts.clip);
+      ctx.clip();
+    }
     ctx.globalAlpha = opts.opacity;
     ctx.lineWidth = opts.strokeWidth;
     ctx.lineCap = opts.lineCap;
@@ -172,7 +177,7 @@ export class ShapeRenderer {
       }
     }
     if (opts.fill) {
-      ctx.fillStyle = opts.fill;
+      ctx.fillStyle = toFillStyle(ctx, opts.fill);
       ctx.fill(opts.fillRule);
     }
     if (opts.stroke) {
@@ -222,4 +227,68 @@ export class ShapeRenderer {
     ctx.fill();
     ctx.restore();
   }
+}
+
+
+// ---------------------------------------------------------------------------
+// Shared path/paint helpers
+// ---------------------------------------------------------------------------
+
+/** Replay M/L/Q/C/Z commands onto an already-begun 2D path. */
+export function tracePathCommands(
+  ctx: {
+    moveTo(x: number, y: number): void;
+    lineTo(x: number, y: number): void;
+    quadraticCurveTo(cx: number, cy: number, x: number, y: number): void;
+    bezierCurveTo(c1x: number, c1y: number, c2x: number, c2y: number, x: number, y: number): void;
+    closePath(): void;
+  },
+  commands: { op: string; x?: number; y?: number; cx?: number; cy?: number; c1x?: number; c1y?: number; c2x?: number; c2y?: number }[],
+): void {
+  for (const command of commands) {
+    switch (command.op) {
+      case "M":
+        ctx.moveTo(command.x!, command.y!);
+        break;
+      case "L":
+        ctx.lineTo(command.x!, command.y!);
+        break;
+      case "Q":
+        ctx.quadraticCurveTo(command.cx!, command.cy!, command.x!, command.y!);
+        break;
+      case "C":
+        ctx.bezierCurveTo(command.c1x!, command.c1y!, command.c2x!, command.c2y!, command.x!, command.y!);
+        break;
+      case "Z":
+        ctx.closePath();
+        break;
+    }
+  }
+}
+
+/** Build a CanvasGradient from the wire gradient definition. */
+export function buildGradientPaint(
+  ctx: CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D,
+  gradient: { type: string; from?: { x: number; y: number }; to?: { x: number; y: number }; inner?: { x: number; y: number; r: number }; outer?: { x: number; y: number; r: number }; stops?: { offset: number; color: string }[] },
+): CanvasGradient {
+  const paint =
+    gradient.type === "linear"
+      ? ctx.createLinearGradient(gradient.from!.x, gradient.from!.y, gradient.to!.x, gradient.to!.y)
+      : ctx.createRadialGradient(
+          gradient.inner!.x,
+          gradient.inner!.y,
+          gradient.inner!.r,
+          gradient.outer!.x,
+          gradient.outer!.y,
+          gradient.outer!.r,
+        );
+  for (const stop of gradient.stops ?? []) paint.addColorStop(stop.offset, stop.color);
+  return paint;
+}
+
+function toFillStyle(
+  ctx: AnyCtx,
+  fill: string | { gradient: Parameters<typeof buildGradientPaint>[1] },
+): string | CanvasGradient {
+  return typeof fill === "string" ? fill : buildGradientPaint(ctx, fill.gradient);
 }

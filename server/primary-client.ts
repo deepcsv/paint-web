@@ -15,6 +15,7 @@ interface PendingExec {
 }
 
 const LONG_RUNNING_METHODS = new Set([
+  "brush.selfTest",
   "canvas.getState",
   "document.replay",
   "document.restoreRaster",
@@ -39,6 +40,20 @@ export class PrimaryClient {
   private consecutiveTimeouts = 0;
   /** Max consecutive timeouts before eviction. 1 = immediate on first timeout. */
   readonly maxTimeouts = 1;
+  /**
+   * When no primary is connected, exec() waits up to this long for a browser
+   * to (re)connect and be elected before failing — webview suspend/reload
+   * cycles typically recover in well under a second. Override with the
+   * constructor option or PAINT_NO_PRIMARY_GRACE_MS (0 disables the grace).
+   */
+  readonly noPrimaryGraceMs: number;
+
+  constructor(options: { noPrimaryGraceMs?: number } = {}) {
+    const fromEnv = Number(process.env.PAINT_NO_PRIMARY_GRACE_MS);
+    this.noPrimaryGraceMs = options.noPrimaryGraceMs
+      ?? (Number.isFinite(fromEnv) ? fromEnv : 5_000);
+  }
+  private electionWaiters: Array<() => void> = [];
 
   setCandidate(conn: WebSocket, isBrowser: boolean): void {
     if (!isBrowser) return;
@@ -58,6 +73,22 @@ export class PrimaryClient {
       }
       this.electPrimary();
     }
+  }
+
+  /** Resolve once a primary exists (or immediately if grace elapsed). */
+  private waitForPrimary(): Promise<boolean> {
+    if (this.hasPrimary()) return Promise.resolve(true);
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        this.electionWaiters = this.electionWaiters.filter((w) => w !== wake);
+        resolve(this.hasPrimary());
+      }, this.noPrimaryGraceMs);
+      const wake = () => {
+        clearTimeout(timer);
+        resolve(true);
+      };
+      this.electionWaiters.push(wake);
+    });
   }
 
   current(): WebSocket | null {
@@ -82,9 +113,20 @@ export class PrimaryClient {
    * candidates. This prevents a zombie primary from blocking all RPCs.
    */
   exec(origMethod: string, origParams: unknown): Promise<unknown> {
-    if (!this.hasPrimary() || !this.primaryConn) {
-      return Promise.reject(RpcError.noPrimary());
+    // Fast path: a live primary dispatches synchronously (tests and callers
+    // rely on the internal.exec frame being on the wire right away).
+    if (this.hasPrimary() && this.primaryConn) {
+      return this.dispatch(origMethod, origParams);
     }
+    return this.waitForPrimary().then((available) => {
+      if (!available || !this.hasPrimary() || !this.primaryConn) {
+        throw RpcError.noPrimary();
+      }
+      return this.dispatch(origMethod, origParams);
+    });
+  }
+
+  private dispatch(origMethod: string, origParams: unknown): Promise<unknown> {
     const requestId = randomUUID() as unknown as RpcId;
     const execId = String(requestId);
     const params: InternalExecParams = { origMethod, origParams, requestId };
@@ -223,6 +265,10 @@ export class PrimaryClient {
       return;
     }
     this.primaryConn = next;
+    // Wake any exec() calls parked in the no-primary grace window.
+    const waiters = this.electionWaiters;
+    this.electionWaiters = [];
+    for (const wake of waiters) wake();
     // Notify the new primary (its app.ts will register handlers accordingly)
     next.send(
       JSON.stringify({

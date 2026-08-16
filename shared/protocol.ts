@@ -339,17 +339,114 @@ export const CanvasAnalyzeResult = z.object({
 });
 export type CanvasAnalyzeResult = z.infer<typeof CanvasAnalyzeResult>;
 
-export const CanvasSampleParams = z.object({
-  layerId: LayerId.optional(),
-  points: z
-    .array(z.object({ x: z.number().int().nonnegative(), y: z.number().int().nonnegative() }))
-    .min(1)
-    .max(512),
-});
+export const CanvasSampleParams = z
+  .object({
+    layerId: LayerId.optional(),
+    points: z
+      .array(z.object({ x: z.number().int().nonnegative(), y: z.number().int().nonnegative() }))
+      .min(1)
+      .max(512)
+      .optional(),
+    /**
+     * Grid sampling alternative to `points`: returns every `stride`-th pixel
+     * of the region (bounded to 4096 samples total). One of points/region
+     * must be present.
+     */
+    region: z
+      .object({
+        x: z.number().int().nonnegative(),
+        y: z.number().int().nonnegative(),
+        w: z.number().int().positive().max(8192),
+        h: z.number().int().positive().max(8192),
+        stride: z.number().int().min(1).max(32).default(1),
+      })
+      .optional(),
+  })
+  .refine((value) => Boolean(value.points || value.region), {
+    message: "Provide points or region",
+  });
 export type CanvasSampleParams = z.infer<typeof CanvasSampleParams>;
 export const CanvasSampleResult = z.object({
   samples: z.array(z.object({ x: z.number(), y: z.number(), color: RgbaColor })),
 });
+
+// ---------------------------------------------------------------------------
+// brush.* methods
+// ---------------------------------------------------------------------------
+
+/**
+ * Render calibration strokes offscreen with each requested preset and report
+ * measured coverage — the agent-side answer to "what does opacity 0.5 of this
+ * brush actually look like on paper?".
+ */
+export const BrushSelfTestParams = z.object({
+  /** Preset names (Chinese display names) or ids. Defaults to all presets. */
+  presets: z.array(z.string().min(1).max(128)).max(128).optional(),
+  /** Stroke width in px (default 8). */
+  size: z.number().positive().max(200).default(8),
+  /** Opacity levels to probe (default [0.2, 0.5, 0.8]). */
+  opacities: z.array(z.number().min(0.01).max(1)).min(1).max(8).default([0.2, 0.5, 0.8]),
+});
+export type BrushSelfTestParams = z.infer<typeof BrushSelfTestParams>;
+export const BrushSelfTestResult = z.object({
+  /** Background the strokes were measured against. */
+  background: RgbaColor,
+  tests: z.array(
+    z.object({
+      id: z.string(),
+      name: z.string(),
+      results: z.array(
+        z.object({
+          opacity: z.number(),
+          /** Mean luminance drop over covered pixels (0-255 scale). */
+          deltaL: z.number(),
+          /** Fraction of the stroke band visibly changed (0-1). */
+          coverage: z.number(),
+        }),
+      ),
+    }),
+  ),
+});
+export type BrushSelfTestResult = z.infer<typeof BrushSelfTestResult>;
+
+// ---------------------------------------------------------------------------
+// watercolor.* methods — live three-field (Curtis 1997 style) wash layers.
+// The layer is a normal raster layer; while wet a GPU sim evolves water,
+// fiber saturation and 8 pigment channels on it. Stepping is deterministic:
+// one step advances the fixed sim clock by one tick, so replays reproduce.
+// ---------------------------------------------------------------------------
+
+export const WatercolorDryParams = z.object({ layerId: LayerId });
+export type WatercolorDryParams = z.infer<typeof WatercolorDryParams>;
+export const WatercolorStepParams = z.object({
+  layerId: LayerId,
+  /** Ticks to evolve the wash (1 tick = 1 sim substep). */
+  frames: z.number().int().min(1).max(600).default(24),
+});
+export type WatercolorStepParams = z.infer<typeof WatercolorStepParams>;
+export const WatercolorSetPaperParams = z.object({
+  layerId: LayerId,
+  preset: z.enum(["hot", "cold", "rough"]),
+  seed: z.number().min(0).max(100).optional(),
+});
+export type WatercolorSetPaperParams = z.infer<typeof WatercolorSetPaperParams>;
+export const WatercolorProbeParams = z.object({
+  layerId: LayerId,
+  x: z.number().min(0).max(1),
+  y: z.number().min(0).max(1),
+});
+export type WatercolorProbeParams = z.infer<typeof WatercolorProbeParams>;
+export const WatercolorProbeResult = z.object({
+  /** Standing film height. */
+  h: z.number(),
+  /** Fiber saturation 0..1. */
+  sat: z.number(),
+  /** Total suspended pigment mass across all 8 channels. */
+  suspended: z.number(),
+  /** Total deposited pigment mass. */
+  deposited: z.number(),
+});
+export type WatercolorProbeResult = z.infer<typeof WatercolorProbeResult>;
 export type CanvasSampleResult = z.infer<typeof CanvasSampleResult>;
 
 // ---------------------------------------------------------------------------
@@ -434,9 +531,33 @@ export type LayerTransformParams = z.infer<typeof LayerTransformParams>;
 // draw.* methods
 // ---------------------------------------------------------------------------
 
+export const PathCommand = z.discriminatedUnion("op", [
+  z.object({ op: z.literal("M"), x: z.number(), y: z.number() }),
+  z.object({ op: z.literal("L"), x: z.number(), y: z.number() }),
+  z.object({ op: z.literal("Q"), cx: z.number(), cy: z.number(), x: z.number(), y: z.number() }),
+  z.object({
+    op: z.literal("C"),
+    c1x: z.number(),
+    c1y: z.number(),
+    c2x: z.number(),
+    c2y: z.number(),
+    x: z.number(),
+    y: z.number(),
+  }),
+  z.object({ op: z.literal("Z") }),
+]);
+export type PathCommand = z.infer<typeof PathCommand>;
+
+const WatercolorLoad = z.object({
+  /** Pigment library name, e.g. "French Ultramarine". */
+  name: z.string().min(1).max(48),
+  amount: z.number().min(0).max(2).default(1),
+});
+export type WatercolorLoad = z.infer<typeof WatercolorLoad>;
+
 const DrawStrokeInput = z.object({
   layerId: LayerId,
-  tool: z.enum(["brush", "eraser"]),
+  tool: z.enum(["brush", "eraser", "watercolor", "hand"]),
   color: Color.default("#000000"),
   size: z.number().positive().max(500),
   opacity: z.number().min(0).max(1).default(1),
@@ -449,12 +570,53 @@ const DrawStrokeInput = z.object({
   seed: z.number().int().min(0).max(0xffff_ffff).optional(),
   /** Version of the deterministic stamp/path algorithm used by this operation. */
   strokeVersion: z.literal(2).default(2),
+  /** Optional closed-path clip mask: stamps outside are discarded. */
+  clip: z.array(PathCommand).min(2).max(4096).optional(),
+  /** watercolor tool: brush wetness 0 (dry brush) .. 1 (flood wash). */
+  water: z.number().min(0).max(1).optional(),
+  /** watercolor tool: pigment mixture carried by this stroke. */
+  pigments: z.array(WatercolorLoad).max(4).optional(),
+  /** hand tool: five-layer hand-error synthesis options. */
+  hand: z.object({
+    style: z.enum(["graphite", "broken", "ghost", "wedge", "clean"]).optional(),
+    /** normal-direction swing amplitude px (default width-adaptive). */
+    amp: z.number().min(0).max(40).optional(),
+    /** end-taper envelope fraction 0..0.5 (default .22). */
+    taper: z.number().min(0.02).max(0.5).optional(),
+    /** start/end overshoot px. */
+    over: z.number().min(0).max(30).optional(),
+    /** graphite crumbs + paper bite-back (default true). */
+    crumbs: z.boolean().optional(),
+    /** ghost re-stroke probability 0..1 (overrides style default). */
+    ghost: z.number().min(0).max(1).optional(),
+    /** wedge stroke (hair tapers wider toward the tip). */
+    wedge: z.boolean().optional(),
+  }).optional(),
 });
 export const DrawStrokeParams = DrawStrokeInput.transform((params) => ({
   ...params,
   seed: params.seed ?? deriveStrokeSeed(params),
 }));
 export type DrawStrokeInput = z.input<typeof DrawStrokeParams>;
+
+/** hand.fill — four hand-drawn fill styles (pencil/hatch/scribble/stipple), all rendered inside a clip region. */
+export const HandFillParams = z.object({
+  layerId: LayerId,
+  /** closed region that clips the fill. */
+  region: z.array(PathCommand).min(2).max(4096),
+  kind: z.enum(["pencil", "hatch", "scribble", "stipple"]),
+  /** pencil: tone darkness 0..1.5. */
+  darkness: z.number().min(0).max(1.5).optional(),
+  /** hatch/scribble/stipple: line/dot spacing px. */
+  spacing: z.number().min(1).max(80).optional(),
+  /** hatch: scan angle radians. */
+  ang: z.number().min(-3.15).max(3.15).optional(),
+  alpha: z.number().min(0).max(1).default(0.45),
+  width: z.number().positive().max(8).default(1.1),
+  color: Color.optional(),
+  seed: z.number().int().min(0).max(0xffff_ffff).optional(),
+});
+export type HandFillParams = z.infer<typeof HandFillParams>;
 export type DrawStrokeParams = z.infer<typeof DrawStrokeParams>;
 
 export const DrawLineParams = z.object({
@@ -536,29 +698,20 @@ export const DrawSetPixelParams = z.object({
 });
 export type DrawSetPixelParams = z.infer<typeof DrawSetPixelParams>;
 
-export const PathCommand = z.discriminatedUnion("op", [
-  z.object({ op: z.literal("M"), x: z.number(), y: z.number() }),
-  z.object({ op: z.literal("L"), x: z.number(), y: z.number() }),
-  z.object({ op: z.literal("Q"), cx: z.number(), cy: z.number(), x: z.number(), y: z.number() }),
-  z.object({
-    op: z.literal("C"),
-    c1x: z.number(),
-    c1y: z.number(),
-    c2x: z.number(),
-    c2y: z.number(),
-    x: z.number(),
-    y: z.number(),
-  }),
-  z.object({ op: z.literal("Z") }),
-]);
-export type PathCommand = z.infer<typeof PathCommand>;
+
+
+/** Path fill paint: solid color or a gradient definition. */
+export const FillPaint = z.union([Color, z.object({ gradient: z.lazy(() => GradientDefinition) })]);
+export type FillPaint = z.infer<typeof FillPaint>;
 
 export const DrawPathParams = z
   .object({
     layerId: LayerId,
     commands: z.array(PathCommand).min(2).max(4096),
     stroke: Color.optional(),
-    fill: Color.optional(),
+    fill: FillPaint.optional(),
+    /** Optional closed-path clip mask applied while painting this path. */
+    clip: z.array(PathCommand).min(2).max(4096).optional(),
     strokeWidth: z.number().positive().max(500).default(1),
     opacity: z.number().min(0).max(1).default(1),
     fillRule: z.enum(["nonzero", "evenodd"]).default("nonzero"),
@@ -568,6 +721,10 @@ export const DrawPathParams = z
   .refine((value) => value.commands[0]?.op === "M", {
     message: "Path must start with an M command",
     path: ["commands", 0],
+  })
+  .refine((value) => !value.clip || value.clip[0]?.op === "M", {
+    message: "Clip path must start with an M command",
+    path: ["clip", 0],
   })
   .refine((value) => Boolean(value.stroke || value.fill), {
     message: "Path requires stroke or fill",
@@ -581,11 +738,18 @@ export const GradientStop = z.object({
 export type GradientStop = z.infer<typeof GradientStop>;
 
 export const GradientDefinition = z.discriminatedUnion("type", [
-  z.object({ type: z.literal("linear"), from: Point, to: Point }),
+  z.object({
+    type: z.literal("linear"),
+    from: Point,
+    to: Point,
+    /** Inline stops for self-contained paints (e.g. path fill). DrawGradientParams also accepts top-level stops. */
+    stops: z.array(GradientStop).min(1).optional(),
+  }),
   z.object({
     type: z.literal("radial"),
     inner: z.object({ x: z.number(), y: z.number(), r: z.number().nonnegative() }),
     outer: z.object({ x: z.number(), y: z.number(), r: z.number().positive() }),
+    stops: z.array(GradientStop).min(1).optional(),
   }),
 ]);
 export type GradientDefinition = z.infer<typeof GradientDefinition>;
@@ -890,6 +1054,16 @@ const RefName = z
   .max(64)
   .regex(/^[A-Za-z0-9][A-Za-z0-9._/-]*$/);
 export const DocumentBranchCreateParams = z.object({ name: RefName });
+/**
+ * Start a fresh document: the current document's commit chain, raster
+ * keyframes, idempotency records and op-log are archived, the canvas is
+ * reset to a single blank layer (optionally resized). Long agent sessions
+ * should call this between artworks instead of accumulating history.
+ */
+export const DocumentNewParams = z.object({
+  width: z.number().int().positive().max(8192).optional(),
+  height: z.number().int().positive().max(8192).optional(),
+});
 export const DocumentBranchSwitchParams = z.object({ name: RefName });
 export const DocumentBranchListResult = z.object({
   current: z.string(),
@@ -942,6 +1116,8 @@ export type SyncHelloParams = z.infer<typeof SyncHelloParams>;
 export const SyncHelloResult = z.object({
   clientId: z.string(),
   isPrimary: z.boolean(),
+  /** True when a browser primary is connected; draw RPCs need one. */
+  primaryAvailable: z.boolean().optional(),
   serverEventSeq: z.number(),
   state: CanvasGetInfoResult,
   document: DocumentReplaySnapshot.optional(),
@@ -1018,6 +1194,11 @@ export const METHODS: Record<string, MethodDef> = {
   "canvas.getRegion": { params: CanvasGetRegionParams, result: CanvasGetRegionResult, needsPrimary: true },
   "canvas.analyze": { params: CanvasAnalyzeParams, result: CanvasAnalyzeResult, needsPrimary: true },
   "canvas.sample": { params: CanvasSampleParams, result: CanvasSampleResult, needsPrimary: true },
+  "brush.selfTest": { params: BrushSelfTestParams, result: BrushSelfTestResult, needsPrimary: true },
+  "watercolor.dry": { params: WatercolorDryParams, needsPrimary: true, emitsEvent: "stroke.committed" },
+  "watercolor.step": { params: WatercolorStepParams, needsPrimary: true, emitsEvent: "stroke.committed" },
+  "watercolor.setPaper": { params: WatercolorSetPaperParams, needsPrimary: true, emitsEvent: "stroke.committed" },
+  "watercolor.probe": { params: WatercolorProbeParams, result: WatercolorProbeResult, needsPrimary: true },
 
   // layer.*
   "layer.create": { params: LayerCreateParams, result: LayerCreateResult, needsPrimary: true, emitsEvent: "layer.created" },
@@ -1035,6 +1216,7 @@ export const METHODS: Record<string, MethodDef> = {
 
   // draw.*
   "draw.stroke": { params: DrawStrokeParams, needsPrimary: true, emitsEvent: "stroke.committed" },
+  "hand.fill": { params: HandFillParams, needsPrimary: true, emitsEvent: "stroke.committed" },
   "draw.line": { params: DrawLineParams, needsPrimary: true, emitsEvent: "stroke.committed" },
   "draw.rect": { params: DrawRectParams, needsPrimary: true, emitsEvent: "stroke.committed" },
   "draw.circle": { params: DrawCircleParams, needsPrimary: true, emitsEvent: "stroke.committed" },
@@ -1084,6 +1266,7 @@ export const METHODS: Record<string, MethodDef> = {
   "doc.undo": { params: DocumentStepParams, result: DocumentRestoreResult, needsPrimary: true, emitsEvent: "document.restored" },
   "doc.redo": { params: DocumentStepParams, result: DocumentRestoreResult, needsPrimary: true, emitsEvent: "document.restored" },
   "doc.branch.create": { params: DocumentBranchCreateParams, result: DocumentRestoreResult, emitsEvent: "document.branch.created" },
+  "doc.new": { params: DocumentNewParams, result: DocumentRestoreResult, needsPrimary: true, emitsEvent: "document.restored" },
   "doc.branch.list": { result: DocumentBranchListResult },
   "doc.branch.switch": { params: DocumentBranchSwitchParams, result: DocumentRestoreResult, needsPrimary: true, emitsEvent: "document.restored" },
   "doc.checkpoint.create": { params: DocumentCheckpointCreateParams, result: DocumentRestoreResult, emitsEvent: "document.checkpoint.created" },

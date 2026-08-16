@@ -5,6 +5,12 @@
  * Caches loaded textures to avoid re-fetching.
  */
 
+/**
+ * Cache-bust revision for texture fetches. Bump whenever public/textures
+ * changes; WebView caches treat immutable subresources as permanently fresh
+ * across soft reloads, so a URL change is the only reliable invalidation.
+ */
+const TEXTURE_REV = "4";
 const cache = new Map<string, ImageBitmap | null>();
 const loading = new Map<string, Promise<ImageBitmap | undefined>>();
 
@@ -19,7 +25,7 @@ export async function loadTexture(name: string): Promise<ImageBitmap | undefined
 
   const promise = (async () => {
     try {
-      const response = await fetch(`/textures/${name}.png`);
+      const response = await fetch(`/textures/${name}.png?v=${TEXTURE_REV}`);
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       const blob = await response.blob();
       const bitmap = await createImageBitmap(blob);

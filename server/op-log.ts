@@ -72,6 +72,22 @@ export class OpLog {
     }
   }
 
+  /**
+   * Archive the current log (ops-<ts>.jsonl) and start empty. Called by
+   * doc.new so fresh documents never pay replay cost for prior sessions.
+   */
+  async rotate(): Promise<void> {
+    this.ops = [];
+    this.pendingAppend = [];
+    if (!this.persist) return;
+    try {
+      await writeFile(this.opsFile, "", "utf8");
+      console.log("[op-log] rotated for new document");
+    } catch (err) {
+      console.warn("[op-log] rotate failed:", err);
+    }
+  }
+
   /** Append an op to the in-memory log and schedule disk persistence. */
   append(op: Omit<OpEntry, "step" | "ts">): OpEntry {
     const entry: OpEntry = {

@@ -20,6 +20,7 @@ import {
   CanvasExportParams,
   CanvasAnalyzeParams,
   CanvasGetRegionParams,
+  BrushSelfTestParams,
   CanvasSampleParams,
   JSONRPC_VERSION,
   SnapshotLoadParams,
@@ -253,12 +254,29 @@ export function registerHandlers(deps: HandlerDeps): void {
     return primary.exec("canvas.analyze", parsed);
   });
 
+  router.register("brush.selfTest", (params) => {
+    return primary.exec("brush.selfTest", BrushSelfTestParams.parse(params));
+  });
+
+  for (const m of ["watercolor.dry", "watercolor.step", "watercolor.setPaper", "watercolor.probe"] as const) {
+    router.register(m, (params) => {
+      assertLayerTarget(params as { layerId?: LayerId });
+      return primary.exec(m, params);
+    });
+  }
+
   router.register("canvas.sample", (params) => {
     const parsed = CanvasSampleParams.parse(params);
     assertLayerTarget(parsed);
-    for (const point of parsed.points) {
+    for (const point of parsed.points ?? []) {
       if (point.x >= state.width || point.y >= state.height) {
         throw RpcError.outOfBounds(point.x, point.y);
+      }
+    }
+    if (parsed.region) {
+      const { x, y, w, h } = parsed.region;
+      if (x + w > state.width || y + h > state.height) {
+        throw RpcError.outOfBounds(x + w - 1, y + h - 1);
       }
     }
     return primary.exec("canvas.sample", parsed);
@@ -398,6 +416,7 @@ export function registerHandlers(deps: HandlerDeps): void {
     "draw.path",
     "draw.gradient",
     "draw.image",
+    "hand.fill",
   ];
   for (const m of drawMethods) {
     router.register(m, (params) => {
@@ -636,6 +655,35 @@ export function registerHandlers(deps: HandlerDeps): void {
     const steps = (params as { steps: number }).steps;
     try {
       return await redoDocument(steps);
+    } catch (error) {
+      rethrowDocumentError(error);
+    }
+  });
+
+  router.register("doc.new", async (params) => {
+    const { width, height } = params as { width?: number; height?: number };
+    try {
+      // Fresh single-layer snapshot at the requested (or current) size.
+      const fresh = state.snapshot();
+      const layer = {
+        id: "L_" + randomUUID().slice(0, 8),
+        name: "Layer 1",
+        visible: true,
+        opacity: 1,
+        blendMode: "source-over" as const,
+      };
+      fresh.layers = [layer];
+      fresh.activeLayerId = layer.id;
+      if (width) fresh.width = width;
+      if (height) fresh.height = height;
+
+      documentStore.reset(fresh);
+      // A root-only document has no raster baseline to replay; restore the
+      // blank state directly (resize + reconcile layers + clear).
+      await primary.exec("document.restoreRaster", { state: fresh, layers: [] });
+      state.restore(fresh);
+      await opLog.rotate();
+      return documentStore.restoreResult();
     } catch (error) {
       rethrowDocumentError(error);
     }

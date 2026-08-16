@@ -85,11 +85,16 @@ export class PointerHandler {
   };
 
   private toCanvasCoord(e: PointerEvent): { x: number; y: number; pressure?: number } {
-    const rect = this.opts.canvas.getBoundingClientRect();
+    const canvas = this.opts.canvas;
+    const rect = canvas.getBoundingClientRect();
     const displayX = e.clientX - rect.left;
     const displayY = e.clientY - rect.top;
-    const scaleX = this.opts.canvasWidth / rect.width;
-    const scaleY = this.opts.canvasHeight / rect.height;
+    // Read the live bitmap size on every event: RPC-side resize / doc.new /
+    // document replay all mutate canvas.width without notifying this handler,
+    // and a stale cached size desynchronizes the cursor hotspot from the
+    // actual stroke position by the resize ratio.
+    const scaleX = canvas.width / rect.width;
+    const scaleY = canvas.height / rect.height;
     const x = (displayX * scaleX) | 0;
     const y = (displayY * scaleY) | 0;
     // Mouse events report a synthetic constant pressure. Leaving it undefined

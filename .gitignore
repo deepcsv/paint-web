@@ -1,14 +1,21 @@
-# Canonical document runtime persistence and atomic-write artifacts
-data/document.json
-data/document.json.bak
-data/document.json.tmp
-data/state.json.bak
-data/state.json.tmp
-data/tmp/
-data/assets/
-
-# Build output and local dependencies
+node_modules/
 dist/
 dist-server/
 dist-cli/
-node_modules/
+data/
+*.timestamp-*
+.DS_Store
+
+# 本地研究与实验产物（不入库）
+research/
+artwork*.png
+*.zip
+*.apk
+data.archive*/
+brush_*.png
+pt_*.png
+tile_*.png
+card_*.png
+brush_catalog*.png
+__pycache__/
+*.mjs

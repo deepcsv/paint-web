@@ -1,5 +1,5 @@
 /**
- * BrushPresets — 94 brush presets reverse-engineered from 画世界 v2.9.14.
+ * BrushPresets — 94 curated brush presets (stamps, textures, dynamics).
  * Extracted via Frida hook on ConcealHelper.decryptByte().
  */
 

@@ -69,6 +69,29 @@ export function createHttpServer(devServer?: ViteDevServer, assetStore?: AssetSt
   const server = createServer(async (req: IncomingMessage, res: ServerResponse) => {
     const url = req.url ?? "/";
 
+    // Brush stamp textures (public/textures). Vite middlewareMode does not
+    // serve publicDir, so wire it explicitly with immutable caching.
+    if (url.startsWith("/textures/")) {
+      const rel = url.slice("/textures/".length).split("?")[0]!;
+      if (!/^[A-Za-z0-9_-]+\.png$/.test(rel)) {
+        res.writeHead(400);
+        res.end("bad texture name");
+        return;
+      }
+      try {
+        const file = await readFile(join(process.cwd(), "public", "textures", rel));
+        res.writeHead(200, {
+          "content-type": "image/png",
+          "cache-control": "no-cache",
+        });
+        res.end(file);
+      } catch {
+        res.writeHead(404);
+        res.end("not found");
+      }
+      return;
+    }
+
     // Health check
     if (url === "/healthz") {
       res.writeHead(200, { "content-type": "application/json" });

@@ -5,6 +5,7 @@ import { Toolbar } from "./ui/Toolbar.js";
 import { ColorPicker } from "./ui/ColorPicker.js";
 import { BrushPanel } from "./ui/BrushPanel.js";
 import { preloadTextures, getTexture } from "./brush/TextureLoader.js";
+import { ALL_BRUSHES } from "./brush/BrushPresets.js";
 import type { BrushPreset } from "./brush/BrushTypes.js";
 import { renderStrokeLive } from "./canvas/StampEngine.js";
 import { SizeSlider } from "./ui/SizeSlider.js";
@@ -48,6 +49,18 @@ function createStrokeSeed(): number {
   const value = new Uint32Array(1);
   crypto.getRandomValues(value);
   return value[0]!;
+}
+
+// Warm the texture cache for every preset at startup: RPC-driven strokes
+// (agents, replays) never pass through UI selection, which was the only
+// place textures were lazily loaded.
+{
+  const allNames = new Set<string>();
+  for (const preset of ALL_BRUSHES) {
+    if (preset.shapeTexture) allNames.add(preset.shapeTexture);
+    if (preset.surfaceTexture) allNames.add(preset.surfaceTexture);
+  }
+  void preloadTextures(allNames);
 }
 
 // Brush panel selection
@@ -505,6 +518,20 @@ internalHandlers.set("canvas.getRegion", (p) => controller.getRegion(p as never)
 internalHandlers.set("canvas.import", (p) => controller.import(p as never));
 internalHandlers.set("canvas.analyze", (p) => controller.analyze(p as never));
 internalHandlers.set("canvas.sample", (p) => controller.sample(p as never));
+internalHandlers.set("brush.selfTest", (p) => controller.brushSelfTest(p as never));
+internalHandlers.set("watercolor.dry", (p) => Promise.resolve(controller.watercolorDry((p as { layerId: string }).layerId)));
+internalHandlers.set("watercolor.step", (p) => {
+    const q = p as { layerId: string; frames: number };
+    return Promise.resolve(controller.watercolorStep(q.layerId, q.frames ?? 24));
+  });
+internalHandlers.set("watercolor.setPaper", (p) => {
+    const q = p as { layerId: string; preset: string; seed?: number };
+    return Promise.resolve(controller.watercolorSetPaper(q.layerId, q.preset, q.seed));
+  });
+internalHandlers.set("watercolor.probe", (p) => {
+    const q = p as { layerId: string; x: number; y: number };
+    return Promise.resolve(controller.watercolorProbe(q.layerId, q.x, q.y) ?? { h: 0, sat: 0, suspended: 0, deposited: 0 });
+  });
 internalHandlers.set("layer.create", (p) => {
   const r = controller.createLayer(p as never);
   refreshLayerPanel();
@@ -540,6 +567,7 @@ internalHandlers.set("layer.flatten", (p) => {
 });
 internalHandlers.set("layer.transform", (p) => controller.transformLayer(p as never));
 internalHandlers.set("draw.stroke", wrapHandler("draw.stroke", (p: never) => controller.stroke(p)));
+internalHandlers.set("hand.fill", wrapHandler("hand.fill", (p: never) => controller.handFill(p)));
 internalHandlers.set("draw.line", wrapHandler("draw.line", (p: never) => controller.line(p)));
 internalHandlers.set("draw.rect", wrapHandler("draw.rect", (p: never) => controller.rect(p)));
 internalHandlers.set("draw.circle", wrapHandler("draw.circle", (p: never) => controller.circle(p)));
