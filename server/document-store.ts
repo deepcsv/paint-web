@@ -27,6 +27,8 @@ interface DocumentCommit {
 interface IdempotencyRecord {
   fingerprint: string;
   result: TransactionExecuteResult;
+  /** LRU ordering stamp (monotonic). */
+  seq?: number;
 }
 
 interface PersistedDocumentStore {
@@ -256,8 +258,18 @@ function compactActiveLayerReplay(
  * operations. Pixel baselines are captured once, before the first P0 edit,
  * so browser reconnects and branch restores can rebuild the exact document.
  */
+/**
+ * Memory policy (long agent sessions): replay only ever needs the most recent
+ * raster keyframe on a root→commit path — older keyframes are a pure undo-depth
+ * optimization, so they are pruned to MAX_RASTER_KEYFRAMES newest. The
+ * idempotency map is an LRU capped at MAX_IDEMPOTENCY_RECORDS.
+ */
+export const MAX_RASTER_KEYFRAMES = 4;
+export const MAX_IDEMPOTENCY_RECORDS = 512;
+
 export class DocumentStore {
   private data: PersistedDocumentStore;
+  private idempotencySeq = 0;
 
   constructor(
     initialState: ServerStateSnapshot,
@@ -270,6 +282,11 @@ export class DocumentStore {
       return;
     }
 
+    this.data = this.constructRoot(initialState);
+    return;
+  }
+
+  private constructRoot(initialState: ServerStateSnapshot): PersistedDocumentStore {
     const now = Date.now();
     const documentId = "D_" + randomUUID().slice(0, 12);
     const rootPayload = canonicalJson({ documentId, state: initialState });
@@ -285,7 +302,7 @@ export class DocumentStore {
       operations: [],
       state: cloneState(initialState),
     };
-    this.data = {
+    return {
       schemaVersion: 1,
       documentId,
       title: "Untitled",
@@ -327,6 +344,19 @@ export class DocumentStore {
 
   currentState(): ServerStateSnapshot {
     return cloneState(this.currentCommit().state);
+  }
+
+  /**
+   * Replace the store with a brand-new document (fresh id, single root
+   * commit, no raster keyframes / idempotency / redo history). The caller is
+   * responsible for restoring ServerState and replaying the blank snapshot
+   * to the primary renderer.
+   */
+  reset(initialState: ServerStateSnapshot): void {
+    const persisted = this.constructRoot(initialState);
+    this.data = persisted;
+    this.idempotencySeq = 0;
+    this.touch();
   }
 
   captureBaseline(layers: DocumentRasterLayer[]): void {
@@ -394,7 +424,9 @@ export class DocumentStore {
     this.data.idempotency[args.idempotencyKey] = {
       fingerprint: args.fingerprint,
       result: structuredClone(result),
+      seq: ++this.idempotencySeq,
     };
+    this.pruneIdempotency();
     this.touch();
     return result;
   }
@@ -624,8 +656,35 @@ export class DocumentStore {
     this.data.commits[id] = commit;
     this.data.branches[this.currentBranch] = id;
     this.data.redo[this.currentBranch] = [];
+    this.pruneRasterKeyframes();
     this.touch();
     return this.summary(commit);
+  }
+
+  /**
+   * Strip raster payloads from all but the newest MAX_RASTER_KEYFRAMES
+   * keyframe-bearing commits. Correctness: buildReplaySnapshot falls back to
+   * an older keyframe (or the baseline) and replays forward, so pruned
+   * rasters only cost replay time on deep undo, never fidelity.
+   */
+  private pruneRasterKeyframes(): void {
+    const withRaster = Object.values(this.data.commits)
+      .filter((c) => c.raster)
+      .sort((a, b) => b.revision - a.revision);
+    for (const commit of withRaster.slice(MAX_RASTER_KEYFRAMES)) {
+      delete commit.raster;
+    }
+  }
+
+  /** Cap the idempotency LRU: drop oldest entries beyond the limit. */
+  private pruneIdempotency(): void {
+    const keys = Object.keys(this.data.idempotency);
+    if (keys.length <= MAX_IDEMPOTENCY_RECORDS) return;
+    const ordered = keys.sort(
+      (a, b) => (this.data.idempotency[a].seq ?? 0) - (this.data.idempotency[b].seq ?? 0),
+    );
+    const excess = ordered.length - MAX_IDEMPOTENCY_RECORDS;
+    for (const key of ordered.slice(0, excess)) delete this.data.idempotency[key];
   }
 
   private currentCommit(): DocumentCommit {

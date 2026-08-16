@@ -2,7 +2,7 @@
 
 A deterministic web painting runtime with a **native JSON-RPC harness for AI agents**. Open a browser to draw, or send versioned operations over WebSocket to drive the canvas programmatically. The production runtime remains a single Node.js process.
 
-Inspired by reverse-engineering the 画世界 Android app — this project keeps only the single-player painting core (brush, shapes, fill, layers, filters, text) and adds a first-class agent interface.
+A single-player painting core (brush, shapes, fill, layers, filters, text) with a first-class agent interface over WebSocket JSON-RPC.
 
 ## Quickstart
 

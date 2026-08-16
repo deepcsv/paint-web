@@ -1,3 +1,4 @@
+import os from "node:os";
 import { createServer as createViteServer } from "vite";
 import { WebSocketServer } from "ws";
 import { createHttpServer, registerTempSnapshot } from "./http-server.js";
@@ -19,7 +20,7 @@ import { registerHandlers } from "./handlers/index.js";
 import { DocumentStore } from "./document-store.js";
 import { AssetStore } from "./asset-store.js";
 
-const HOST = process.env.PAINT_HOST ?? "127.0.0.1";
+const HOST = process.env.PAINT_HOST ?? "0.0.0.0";   // 局域网可用: 监听所有接口 (可用 PAINT_HOST 收窄)
 const PORT = parseInt(process.env.PAINT_PORT ?? "8080", 10);
 const TOKEN = process.env.PAINT_TOKEN;
 
@@ -57,7 +58,7 @@ async function main() {
   let vite: Awaited<ReturnType<typeof createViteServer>> | undefined;
   if (isDev) {
     vite = await createViteServer({
-      server: { middlewareMode: true },
+      server: { middlewareMode: true, allowedHosts: true },
       appType: "custom",
       logLevel: "info",
     });
@@ -117,6 +118,14 @@ async function main() {
   httpServer.listen(PORT, HOST, () => {
     console.log(`\n  Paint Web`);
     console.log(`  ─────────────────────────────────────────────`);
+    if (HOST === "0.0.0.0") {
+      const nets = os.networkInterfaces();
+      for (const name of Object.keys(nets)) {
+        for (const net of nets[name] ?? []) {
+          if (net.family === "IPv4" && !net.internal) console.log(`  LAN  : http://${net.address}:${PORT}`);
+        }
+      }
+    }
     console.log(`  HTTP : http://${HOST}:${PORT}`);
     console.log(`  WS   : ws://${HOST}:${PORT}`);
     console.log(`  Mode : ${isDev ? "dev (Vite middleware)" : "production (dist/)"}`);

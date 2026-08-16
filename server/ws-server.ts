@@ -337,6 +337,8 @@ export function attachWsServer(deps: WsServerDeps): void {
         const result = {
           clientId: meta.clientId,
           isPrimary,
+          /** Whether any browser currently holds pixel authority (agents may gate draw work on this). */
+          primaryAvailable: primary.hasPrimary(),
           serverEventSeq: events.currentSeq(),
           state: state.getInfo({ undo: 0, redo: 0 }),
           ...(meta.role === "browser" && documentStore.baselineCaptured

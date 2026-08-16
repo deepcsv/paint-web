@@ -760,3 +760,58 @@ describe("BrushPresets — name/ID lookup", () => {
     expect(brush.supportPressure).toBe(true);
   });
 });
+
+// ── Brush health: no preset may be silently dead ─────────────────────────
+// Regression for the "针管笔变淡 / 美术笔全零" incident class: render a
+// pressure-sweep stroke with every preset through the procedural path and
+// require visible ink somewhere on the ramp. Dynamic nibs (pressReverse,
+// low flow) always hit their bold zone within the sweep.
+
+describe("brush health sweep (all presets)", () => {
+  it("every non-eraser preset leaves visible ink at some pressure", () => {
+    const failures: string[] = [];
+    // Reuse one canvas: allocating ~90 Skia surfaces in a single test raced
+    // the Rust finalizer during teardown (sk.rs panic).
+    const { ctx } = makeCanvas(240, 60);
+    for (const preset of ALL_BRUSHES) {
+      if (preset.eraser) continue;
+      ctx.fillStyle = "#ffffff";
+      ctx.fillRect(0, 0, 240, 60);
+      const sweep = [];
+      for (let k = 0; k <= 12; k++) {
+        sweep.push({ x: 20 + (k / 12) * 180, y: 30 + Math.sin(k) * 2, pressure: 0.12 + (k / 12) * 0.83 });
+      }
+      renderStroke(ctx, preset, sweep, "#323232", {}, 8 / Math.max(preset.width, 1), { opacityOverride: 1, seed: 7 });
+      const data = ctx.getImageData(0, 0, 240, 60).data;
+      let covered = 0;
+      let sum = 0;
+      const n = 240 * 60;
+      for (let i = 0; i < n; i++) {
+        const o = i * 4;
+        const l = 0.299 * data[o] + 0.587 * data[o + 1] + 0.114 * data[o + 2];
+        const d = 255 - l;
+        if (d > 8) { covered++; sum += d; }
+      }
+      const meanDrop = covered > 0 ? sum / covered : 0;
+      // Floor catches fully-dead stamps; spray/particle families still pass
+      // because their sparse dots land somewhere in the swept band.
+      if (covered / n < 0.002 || meanDrop < 4) {
+        failures.push(`${preset.name}(cov=${(covered / n).toFixed(4)}, ΔL=${meanDrop.toFixed(1)})`);
+      }
+    }
+    expect(failures, `dead brushes: ${failures.join(", ")}`).toEqual([]);
+  });
+
+  it("classic ink pens render with strong procedural coverage", () => {
+    for (const name of ["圆珠笔", "中性笔", "像素笔", "手写笔", "二值笔"]) {
+      const preset = getByNameOrId(name);
+      const { ctx } = makeCanvas(240, 40);
+      ctx.fillStyle = "#ffffff";
+      ctx.fillRect(0, 0, 240, 40);
+      renderStroke(ctx, preset, [{ x: 20, y: 20, pressure: 0.7 }, { x: 220, y: 20, pressure: 0.7 }], "#323232", {}, 8 / Math.max(preset.width, 1), { opacityOverride: 1, seed: 3 });
+      const px = getPixel(ctx, 120, 20);
+      const l = 0.299 * px[0] + 0.587 * px[1] + 0.114 * px[2];
+      expect(l, `${name} should lay down strong ink`).toBeLessThan(160);
+    }
+  });
+});

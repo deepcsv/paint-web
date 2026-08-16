@@ -79,7 +79,7 @@ describe("PrimaryClient", () => {
   });
 
   it("replaces a connected renderer that lacks a routed method", async () => {
-    const primary = new PrimaryClient();
+    const primary = new PrimaryClient({ noPrimaryGraceMs: 0 });
     const outdated = new FakeSocket();
     const replacement = new FakeSocket();
     primary.setCandidate(outdated as unknown as WebSocket, true);

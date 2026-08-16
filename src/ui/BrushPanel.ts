@@ -2,7 +2,7 @@ import { PACKAGES } from "../brush/BrushPresets.js";
 import type { BrushPreset } from "../brush/BrushTypes.js";
 
 /**
- * BrushPanel — UI for selecting from 94 reverse-engineered brush presets.
+ * BrushPanel — UI for selecting from 94 brush presets.
  *
  * Shows brushes grouped by package (常规画笔, 艺术画笔, etc.).
  * Each brush shows its name and a small preview dot.

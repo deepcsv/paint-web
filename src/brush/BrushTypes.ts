@@ -1,7 +1,7 @@
 /**
  * BrushPreset — a complete brush definition with all rendering parameters.
  *
- * Reverse-engineered from 画世界's BrushJson.java (70 fields).
+ * Modeled on a mobile painting app's BrushJson.java (70 fields).
  * 94 presets extracted via Frida hook on ConcealHelper.decryptByte().
  */
 

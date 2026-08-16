@@ -790,7 +790,9 @@ export function renderStroke(
   for (let stampIndex = 0; stampIndex < stamps.length; stampIndex++) {
     const stamp = stamps[stampIndex]!;
     const w = stamp.width;
-    if (w < 0.5) continue;
+    // Non-finite widths (degenerate presets, upstream NaN) must never reach
+    // drawImage: Skia unwraps None on NaN source rects and aborts the process.
+    if (!Number.isFinite(w) || w < 0.5) continue;
 
     // Render an opaque-alpha tip first. It is shared by the smudge mask and
     // paint deposition, so transparent paint does not disable smudging.

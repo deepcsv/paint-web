@@ -6,7 +6,12 @@ import { ShapeRenderer } from "./ShapeRenderer.js";
 import { floodFill } from "./FillEngine.js";
 import { FilterEngine } from "./FilterEngine.js";
 import { analyzePixels, samplePixels } from "./CanvasAnalyzer.js";
-import { getById as getPresetById } from "../brush/BrushPresets.js";
+import { tracePathCommands } from "./ShapeRenderer.js";
+import { ALL_BRUSHES, getById as getPresetById, getByNameOrId } from "../brush/BrushPresets.js";
+import { loadTexture } from "../brush/TextureLoader.js";
+import { WatercolorSim, type WatercolorSplat } from "./WatercolorSim.js";
+import { handStroke, handBroken, handHatchFill, handScribbleFill, handPencilFill, handStippleFill } from "./HandEngine.js";
+import { buildSlotLoads } from "../brush/WatercolorPigments.js";
 import { getTexture } from "../brush/TextureLoader.js";
 import type {
   CanvasAnalyzeParams,
@@ -24,6 +29,7 @@ import type {
   DrawTextParams,
   DrawSetPixelParams,
   DrawPathParams,
+  HandFillParams,
   LayerTransformParams,
   BlendMode,
   Layer,
@@ -31,6 +37,38 @@ import type {
 } from "../../shared/protocol.js";
 
 type AnyCtx = CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D;
+
+/** Flatten PathCommand[] (M/L/Q/C/Z) to a polyline point list for fill regions. */
+function pathCommandsToPts(cmds: { op: string; x?: number; y?: number; cx?: number; cy?: number; c1x?: number; c1y?: number; c2x?: number; c2y?: number }[]): Array<[number, number]> {
+  const pts: Array<[number, number]> = [];
+  let cx = 0, cy = 0;
+  for (const c of cmds) {
+    if (c.op === "M" || c.op === "L") {
+      cx = c.x ?? cx; cy = c.y ?? cy;
+      pts.push([cx, cy]);
+    } else if (c.op === "Q" && c.cx !== undefined && c.cy !== undefined && c.x !== undefined && c.y !== undefined) {
+      const [x0, y0] = pts[pts.length - 1] ?? [cx, cy];
+      const qx = c.cx, qy = c.cy, qxe = c.x, qye = c.y;
+      for (let i = 1; i <= 6; i++) {
+        const t = i / 6, u = 1 - t;
+        pts.push([u * u * x0 + 2 * u * t * qx + t * t * qxe, u * u * y0 + 2 * u * t * qy + t * t * qye]);
+      }
+      cx = qxe; cy = qye;
+    } else if (c.op === "C" && c.c1x !== undefined && c.c1y !== undefined && c.c2x !== undefined && c.c2y !== undefined && c.x !== undefined && c.y !== undefined) {
+      const [x0, y0] = pts[pts.length - 1] ?? [cx, cy];
+      const c1x = c.c1x, c1y = c.c1y, c2x = c.c2x, c2y = c.c2y, c3x = c.x, c3y = c.y;
+      for (let i = 1; i <= 8; i++) {
+        const t = i / 8, u = 1 - t;
+        pts.push([u * u * u * x0 + 3 * u * u * t * c1x + 3 * u * t * t * c2x + t * t * t * c3x,
+                  u * u * u * y0 + 3 * u * u * t * c1y + 3 * u * t * t * c2y + t * t * t * c3y]);
+      }
+      cx = c3x; cy = c3y;
+    } else if (c.op === "Z" && pts.length) {
+      pts.push([pts[0][0], pts[0][1]]);
+    }
+  }
+  return pts;
+}
 
 /**
  * CanvasController — the bridge between RPC (server) and the actual canvas
@@ -44,6 +82,9 @@ type AnyCtx = CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D;
  */
 export class CanvasController {
   readonly layers: LayerStack;
+  /** Live watercolor simulations keyed by layer id (raster layers whose
+   *  pixels are the K-M composite of the sim while wet). */
+  private watercolorSims = new Map<LayerId, WatercolorSim>();
   readonly history: HistoryStack;
   readonly renderCanvas: HTMLCanvasElement;
   private renderCtx: CanvasRenderingContext2D;
@@ -258,7 +299,84 @@ export class CanvasController {
       ? this.layers.getLayerImageData(params.layerId)
       : this.layers.getCompositeImageData(true);
     if (!image) throw new Error("layer not found");
-    return samplePixels(image, params.points);
+    if (params.region) return sampleRegion(image, params.region);
+    return samplePixels(image, params.points!);
+  }
+
+  /**
+   * Offscreen brush calibration: render one horizontal stroke per opacity for
+   * each preset and measure deltaL / coverage against the white background.
+   * Exposes silent engine degradation (missing textures, dead presets) and
+   * lets agents pick opacity curves empirically.
+   */
+  async brushSelfTest(params: {
+    presets?: string[];
+    size?: number;
+    opacities?: number[];
+  }): Promise<{ background: { r: number; g: number; b: number; a: number }; tests: { id: string; name: string; results: { opacity: number; deltaL: number; coverage: number }[] }[] }> {
+    const size = params.size ?? 8;
+    const opacities = params.opacities?.length ? params.opacities : [0.2, 0.5, 0.8];
+    const queries = params.presets?.length ? params.presets : ALL_BRUSHES.map((b) => b.name);
+    const band = Math.ceil(size * 2.5);
+    const rowH = band + 14;
+    const tests: { id: string; name: string; results: { opacity: number; deltaL: number; coverage: number }[] }[] = [];
+    for (const query of queries) {
+      const preset = getByNameOrId(query);
+      await Promise.all(
+        [preset.shapeTexture, preset.surfaceTexture].filter(Boolean).map((n) => loadTexture(n as string)),
+      );
+      const canvas = document.createElement("canvas");
+      canvas.width = 220;
+      canvas.height = rowH * opacities.length;
+      const ctx = canvas.getContext("2d", { willReadFrequently: true })!;
+      ctx.fillStyle = "#ffffff";
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      const results: { opacity: number; deltaL: number; coverage: number }[] = [];
+      for (let i = 0; i < opacities.length; i++) {
+        const y = i * rowH + band / 2;
+        const textures: { shape?: ImageBitmap; surface?: ImageBitmap } = {};
+        if (preset.shapeTexture) textures.shape = getTexture(preset.shapeTexture);
+        if (preset.surfaceTexture) textures.surface = getTexture(preset.surfaceTexture);
+        // Pressure sweep 0.12 -> 0.95: dynamic brushes (pressReverse nibs,
+        // low-flow airbrushes) hit their bold zone somewhere on the ramp, so
+        // a single fixed pressure can never misjudge them as dead.
+        const sweep = [];
+        for (let k = 0; k <= 12; k++) {
+          sweep.push({ x: 20 + (k / 12) * 180, y: y + Math.sin(k) * 0.5, pressure: 0.12 + (k / 12) * 0.83 });
+        }
+        renderStampStroke(ctx, preset, sweep, "#323232", textures, size / Math.max(preset.width, 1), {
+          opacityOverride: opacities[i],
+          seed: 7,
+        });
+        // measure band
+        const data = ctx.getImageData(0, i * rowH, canvas.width, band).data;
+        let sum = 0;
+        let covered = 0;
+        let n = 0;
+        for (let py = 0; py < band; py++) {
+          for (let px = 0; px < canvas.width; px++) {
+            const o = (py * canvas.width + px) * 4;
+            const l = 0.299 * data[o] + 0.587 * data[o + 1] + 0.114 * data[o + 2];
+            const d = 255 - l; // vs white
+            n++;
+            if (d > 8) {
+              covered++;
+              sum += d;
+            }
+          }
+        }
+        results.push({
+          opacity: opacities[i],
+          deltaL: covered ? +(sum / covered).toFixed(1) : 0,
+          coverage: n ? +(covered / n).toFixed(3) : 0,
+        });
+      }
+      tests.push({ id: preset.id, name: preset.name, results });
+    }
+    return {
+      background: { r: 255, g: 255, b: 255, a: 255 },
+      tests,
+    };
   }
 
   // -------------------------------------------------------------------------
@@ -339,14 +457,21 @@ export class CanvasController {
   // draw.*
   // -------------------------------------------------------------------------
 
-  stroke(params: DrawStrokeParams): void {
+  async stroke(params: DrawStrokeParams): Promise<void> {
     if (!params.layerId) return;
+    if (params.tool === "watercolor") return this.watercolorStroke(params);
+    if (params.tool === "hand") return this.handStrokeDraw(params);
+    // RPC strokes bypass UI selection; make sure stamp textures are loaded
+    // instead of silently falling back to the procedural mask.
+    const texNames = [params.brush?.shapeTexture, params.brush?.surfaceTexture].filter(Boolean) as string[];
+    if (texNames.length) await Promise.all(texNames.map((n) => loadTexture(n)));
     this.snapshotForUndo(params.layerId);
     const ctx = this.getCtx(params.layerId);
     if (!ctx) return;
 
     // Embedded brush snapshots make replay independent of future preset edits.
     // ID-only operations remain supported for v1 documents and compact clients.
+    const clipRestore = applyClipMask(ctx, params.clip);
     if (params.brush || params.brushPresetId) {
       const preset = params.brush ?? getPresetById(params.brushPresetId!);
       const textures: { shape?: ImageBitmap; surface?: ImageBitmap } = {};
@@ -365,6 +490,192 @@ export class CanvasController {
         { tool: params.tool, color: params.color, size: params.size, opacity: params.opacity },
         params.points,
       );
+    }
+    if (clipRestore) ctx.restore();
+    this.requestRender();
+  }
+
+  private async watercolorStroke(params: DrawStrokeParams): Promise<void> {
+    const layerId = params.layerId!;
+    let sim = this.watercolorSims.get(layerId);
+    if (!sim) {
+      const layer = this.layers.listLayers().find(l => l.id === layerId);
+      const w = layer ? this.layers.width : this.layers.width;
+      const scale = Math.min(1, 1024 / Math.max(w, this.layers.height));
+      sim = new WatercolorSim(Math.round(this.layers.width * scale), Math.round(this.layers.height * scale));
+      this.watercolorSims.set(layerId, sim);
+    }
+    this.snapshotForUndo(layerId);
+    const mix = params.pigments ?? [];
+    const slots = buildSlotLoads(mix, params.water ?? 0.5);
+    sim.setSlots(slots);
+    const mode: 0 | 1 | 2 = (params.tool === "watercolor" ? 0 : 0) as 0;
+    const water = params.water ?? 0.5;
+    // spatial stamping: a splat lands every 0.38r of travel
+    const r = Math.max(4, params.size * 0.5) / (sim.W / this.layers.width);
+    const wPer = 0.02 + 0.22 * water * water;
+    const splats: WatercolorSplat[] = [];
+    let sx: number | null = null, sy = 0;
+    const spacing = Math.max(r * 0.38, 1.5);
+    const toSim = (p: { x: number; y: number }) => ({
+      x: (p.x / this.layers.width) * sim!.W,
+      y: (1 - p.y / this.layers.height) * sim!.H,
+    });
+    for (let i = 0; i < params.points.length; i++) {
+      const cur = params.points[i]!;
+      const sim1 = toSim(cur);
+      if (i === 0) {
+        splats.push({ x: sim1.x, y: sim1.y, r, water: wPer, vx: 0, vy: 0 });
+        sx = sim1.x; sy = sim1.y;
+        continue;
+      }
+      const prev = toSim(params.points[i - 1]!);
+      const dx = sim1.x - prev.x, dy = sim1.y - prev.y;
+      const len = Math.hypot(dx, dy);
+      if (len < 0.01) continue;
+      const kick = Math.min(1.2, len * 0.06);
+      const vx = (dx / len) * kick, vy = (dy / len) * kick;
+      const n = Math.max(1, Math.ceil(len / (spacing / 3)));
+      for (let j = 1; j <= n; j++) {
+        const x = prev.x + (dx * j) / n;
+        const y = prev.y + (dy * j) / n;
+        if (sx === null || Math.hypot(x - sx, y - sy) >= spacing) {
+          splats.push({ x, y, r, water: wPer, vx, vy });
+          sx = x; sy = y;
+        }
+      }
+    }
+    const toolMode: 0 | 1 | 2 = mix.length === 0 && water > 0.85 ? 1 : mode;
+    // Temporal application: a real stroke dwells, so the brush keeps pumping
+    // splats (radial splat-out impulses) into the puddle over time. One-shot
+    // dumping produces a tight bead; interleaving small chunks with sim steps
+    // reproduces the sustained outward drive of a live drag.
+    const CHUNK = 1;
+    for (let i = 0; i < splats.length; i += CHUNK) {
+      sim.stroke({
+        mode: toolMode,
+        water,
+        splats: splats.slice(i, i + CHUNK),
+        pig0: slots.loads.slice(0, 4),
+        pig1: slots.loads.slice(4, 8),
+      });
+    }
+    this.compositeWatercolor(layerId, sim);
+  }
+
+  /** Blit the sim's K-M composite onto the layer's 2D canvas. */
+  private compositeWatercolor(layerId: LayerId, sim: WatercolorSim): void {
+    const ctx = this.getCtx(layerId);
+    if (!ctx) return;
+    sim.render();
+    ctx.save();
+    ctx.globalCompositeOperation = "source-over";
+    ctx.imageSmoothingEnabled = true;
+    ctx.drawImage(
+      sim.canvas as CanvasImageSource,
+      0, 0, sim.W, sim.H,
+      0, 0, this.layers.width, this.layers.height,
+    );
+    ctx.restore();
+    this.requestRender();
+  }
+
+  watercolorDry(layerId: LayerId): boolean {
+    const sim = this.watercolorSims.get(layerId);
+    if (!sim) return false;
+    this.snapshotForUndo(layerId);
+    // evaporate hard: many ticks, then fix the wash into the ground
+    sim.step(240);
+    sim.bake();
+    this.compositeWatercolor(layerId, sim);
+    return true;
+  }
+
+  watercolorStep(layerId: LayerId, frames: number): boolean {
+    const sim = this.watercolorSims.get(layerId);
+    if (!sim) return false;
+    sim.step(frames);
+    this.compositeWatercolor(layerId, sim);
+    return true;
+  }
+
+  watercolorSetPaper(layerId: LayerId, preset: string, seed?: number): boolean {
+    const sim = this.watercolorSims.get(layerId);
+    if (!sim) return false;
+    sim.setPaper(preset, seed ?? 7.31);
+    sim.clearAll();
+    this.compositeWatercolor(layerId, sim);
+    return true;
+  }
+
+  watercolorProbe(layerId: LayerId, x: number, y: number) {
+    const sim = this.watercolorSims.get(layerId);
+    if (!sim) return null;
+    return sim.probe(x, y);
+  }
+
+  /** Five-layer hand-error synthesis stroke (see HandEngine). */
+  private handStrokeDraw(params: DrawStrokeParams): void {
+    const ctx = this.getCtx(params.layerId!);
+    if (!ctx) return;
+    this.snapshotForUndo(params.layerId!);
+    const h = params.hand ?? {};
+    const pts: Array<[number, number]> = params.points.map(p => [p.x, p.y]);
+    const hex = params.color ?? "#000000";
+    const color: [number, number, number] = [
+      parseInt(hex.slice(1, 3), 16),
+      parseInt(hex.slice(3, 5), 16),
+      parseInt(hex.slice(5, 7), 16),
+    ];
+    const opts = {
+      seed: params.seed ?? 1,
+      color,
+      alpha: params.opacity,
+      amp: h.amp,
+      taper: h.taper,
+      over: h.over,
+      crumbs: h.crumbs,
+      ghost: h.ghost ?? (h.style === "ghost" ? 0.75 : 0.35),
+      wedge: h.wedge ?? h.style === "wedge",
+    };
+    const w = params.size;
+    if (h.style === "broken") {
+      handBroken(ctx, pts, w, { ...opts, over: opts.over ?? w * 0.6 });
+    } else if (h.style === "clean") {
+      handStroke(ctx, pts, w, { ...opts, crumbs: false, ghost: 0, amp: h.amp ?? 1.2 });
+    } else {
+      handStroke(ctx, pts, w, { ...opts, over: opts.over ?? w * 0.7 });
+    }
+    this.requestRender();
+  }
+
+  /** Four hand-drawn fill styles, all rendered inside a clip region. */
+  handFill(params: HandFillParams): void {
+    const ctx = this.getCtx(params.layerId);
+    if (!ctx) return;
+    this.snapshotForUndo(params.layerId);
+    const region = pathCommandsToPts(params.region);
+    if (region.length < 3) return;
+    const hex = params.color ?? "#1F1D1A";
+    const color: [number, number, number] = [
+      parseInt(hex.slice(1, 3), 16),
+      parseInt(hex.slice(3, 5), 16),
+      parseInt(hex.slice(5, 7), 16),
+    ];
+    const opts = { seed: params.seed ?? 1, color };
+    switch (params.kind) {
+      case "pencil":
+        handPencilFill(ctx, region, params.darkness ?? 0.8, opts);
+        break;
+      case "hatch":
+        handHatchFill(ctx, region, params.spacing ?? 8, params.ang ?? 0.9, params.alpha, params.width, opts);
+        break;
+      case "scribble":
+        handScribbleFill(ctx, region, params.spacing ?? 6, params.alpha, opts);
+        break;
+      case "stipple":
+        handStippleFill(ctx, region, params.spacing ?? 5, params.alpha, opts);
+        break;
     }
     this.requestRender();
   }
@@ -584,4 +895,60 @@ function cssFontFamily(name: string): string {
     default:
       return name;
   }
+}
+
+
+// ---------------------------------------------------------------------------
+// Clip mask / region sampling helpers
+// ---------------------------------------------------------------------------
+
+type ClipCtx = Parameters<typeof tracePathCommands>[0] & { save(): void; restore(): void; beginPath(): void; clip(): void };
+function applyClipMask(
+  ctx: ClipCtx,
+  clip?: { op: string; x?: number; y?: number; cx?: number; cy?: number; c1x?: number; c1y?: number; c2x?: number; c2y?: number }[],
+): boolean {
+  if (!clip?.length) return false;
+  ctx.save();
+  ctx.beginPath();
+  tracePathCommands(ctx, clip);
+  ctx.clip();
+  return true;
+}
+
+/** Sample every stride-th pixel of a region (bounded to 4096 samples). */
+function sampleRegion(
+  image: ImageData,
+  region: { x: number; y: number; w: number; h: number; stride: number },
+): { samples: { x: number; y: number; color: { r: number; g: number; b: number; a: number; hex: string } }[] } {
+  const stride = Math.max(1, region.stride);
+  let cols = Math.ceil(region.w / stride);
+  let rows = Math.ceil(region.h / stride);
+  const cap = 4096;
+  let effStride = stride;
+  if (cols * rows > cap) {
+    effStride = Math.max(stride, Math.ceil(Math.sqrt((region.w * region.h) / cap)));
+    cols = Math.ceil(region.w / effStride);
+    rows = Math.ceil(region.h / effStride);
+  }
+  const samples: { x: number; y: number; color: { r: number; g: number; b: number; a: number; hex: string } }[] = [];
+  for (let j = 0; j < rows; j++) {
+    for (let i = 0; i < cols; i++) {
+      const px = region.x + Math.min(i * effStride, region.w - 1);
+      const py = region.y + Math.min(j * effStride, region.h - 1);
+      const o = (py * image.width + px) * 4;
+      const r = image.data[o], g = image.data[o + 1], b = image.data[o + 2];
+      samples.push({
+        x: px,
+        y: py,
+        color: {
+          r,
+          g,
+          b,
+          a: image.data[o + 3],
+          hex: "#" + [r, g, b].map((v) => v.toString(16).padStart(2, "0")).join(""),
+        },
+      });
+    }
+  }
+  return { samples };
 }

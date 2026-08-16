@@ -1064,8 +1064,8 @@ program
     output(opts, result);
   });
 
-// ── brush list — list all 94 brush presets from 画世界 ───────────────────
-const brushCmd = program.command("brush").description("List and apply 画世界 brush presets");
+// ── brush list — list all 94 brush presets ───────────────────
+const brushCmd = program.command("brush").description("List and apply brush presets");
 brushCmd
   .command("list")
   .option("--package <name>", "Filter by package name (e.g. 常规画笔)")

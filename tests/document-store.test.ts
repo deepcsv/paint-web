@@ -314,3 +314,63 @@ describe("DocumentStore", () => {
     expect(store.getReplaySnapshot().operations[0]?.method).toBe("draw.setPixel");
   });
 });
+
+describe("DocumentStore memory policy (long agent sessions)", () => {
+  it("prunes raster keyframes beyond the newest MAX_RASTER_KEYFRAMES", () => {
+    const { state, store } = createStore();
+    const raster = state.layers.map((layer) => ({ id: layer.id, png: "a".repeat(64) }));
+    for (let i = 0; i < 8; i++) {
+      store.recordOperation(
+        "draw.stroke",
+        { seed: i },
+        { ok: true },
+        state.snapshot(),
+        "agent",
+        raster,
+      );
+    }
+    const withRaster = Object.values((store as unknown as { data: { commits: Record<string, { raster?: unknown }> } }).data.commits)
+      .filter((c) => c.raster);
+    expect(withRaster.length).toBeLessThanOrEqual(4);
+    // The surviving keyframes must be the newest by revision.
+    const revisions = withRaster.map((c) => (c as unknown as { revision: number }).revision);
+    expect(Math.max(...revisions)).toBe(8);
+  });
+
+  it("caps the idempotency map as an LRU", async () => {
+    const { state, store } = createStore();
+    for (let i = 0; i < 600; i++) {
+      store.recordTransaction({
+        idempotencyKey: `key-${i}`,
+        fingerprint: `fp-${i}`,
+        message: "t",
+        operations: [{ method: "draw.stroke", params: { seed: i }, result: { ok: true } }],
+        results: [{ ok: true }],
+        state: state.snapshot(),
+        clientId: "agent",
+      });
+    }
+    const map = (store as unknown as { data: { idempotency: Record<string, unknown> } }).data.idempotency;
+    expect(Object.keys(map).length).toBeLessThanOrEqual(512);
+    expect(map["key-0"]).toBeUndefined(); // oldest evicted
+    expect(map["key-599"]).toBeDefined(); // newest retained
+  });
+
+  it("reset() yields a brand-new document with empty history", () => {
+    const { state, store } = createStore();
+    const before = store.documentId;
+    state.createLayer("X", "L_x");
+    store.recordOperation("layer.create", {}, { layerId: "L_x" }, state.snapshot(), "agent");
+
+    const fresh = state.snapshot();
+    fresh.layers = [{ id: "L_new", name: "Layer 1", visible: true, opacity: 1, blendMode: "source-over" as const }];
+    fresh.activeLayerId = "L_new";
+    store.reset(fresh);
+
+    expect(store.documentId).not.toBe(before);
+    expect(store.historyLength().undo).toBe(0);
+    const replay = store.getReplaySnapshot();
+    expect(replay.operations).toHaveLength(0);
+    expect(replay.state.layers).toHaveLength(1);
+  });
+});
