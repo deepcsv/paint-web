@@ -10,7 +10,8 @@ import { tracePathCommands } from "./ShapeRenderer.js";
 import { ALL_BRUSHES, getById as getPresetById, getByNameOrId } from "../brush/BrushPresets.js";
 import { loadTexture } from "../brush/TextureLoader.js";
 import { WatercolorSim, type WatercolorSplat } from "./WatercolorSim.js";
-import { handStroke, handBroken, handHatchFill, handScribbleFill, handPencilFill, handStippleFill } from "./HandEngine.js";
+import { handStroke, handBroken, handHatchFill, handScribbleFill, handPencilFill, handStippleFill, PEN_PRESETS } from "./HandEngine.js";
+import * as PortraitEngine from "./PortraitEngine.js";
 import { buildSlotLoads } from "../brush/WatercolorPigments.js";
 import { getTexture } from "../brush/TextureLoader.js";
 import type {
@@ -627,6 +628,8 @@ export class CanvasController {
       parseInt(hex.slice(3, 5), 16),
       parseInt(hex.slice(5, 7), 16),
     ];
+    // v2: pen preset expansion (a-dude port)
+    const pen = h.pen ? PEN_PRESETS[h.pen] : undefined;
     const opts = {
       seed: params.seed ?? 1,
       color,
@@ -637,6 +640,12 @@ export class CanvasController {
       crumbs: h.crumbs,
       ghost: h.ghost ?? (h.style === "ghost" ? 0.75 : 0.35),
       wedge: h.wedge ?? h.style === "wedge",
+      press: h.press ?? pen?.press,
+      dry: h.dry ?? pen?.dry,
+      pool: h.pool ?? pen?.pool,
+      split: h.split ?? pen?.split,
+      bite: h.bite ?? pen?.bite,
+      fbm: h.fbm ?? (pen !== undefined),
     };
     const w = params.size;
     if (h.style === "broken") {
@@ -678,6 +687,18 @@ export class CanvasController {
         break;
     }
     this.requestRender();
+  }
+
+  /** programmatic portrait casting — five-axis person → skull → quirk → features. */
+  portraitDraw(params: import("../../shared/protocol.js").PortraitDrawParams): { spec: unknown } {
+    const ctx = this.getCtx(params.layerId);
+    if (!ctx) return { spec: null };
+    this.snapshotForUndo(params.layerId);
+    const { drawPortrait, castPortrait } = PortraitEngine;
+    drawPortrait(ctx, params.seed, params.x, params.y, params.size, { ink: params.ink, paper: params.paper });
+    const spec = castPortrait(params.seed);
+    this.requestRender();
+    return { spec };
   }
 
   line(params: DrawLineParams): void {

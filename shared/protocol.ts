@@ -591,6 +591,21 @@ const DrawStrokeInput = z.object({
     ghost: z.number().min(0).max(1).optional(),
     /** wedge stroke (hair tapers wider toward the tip). */
     wedge: z.boolean().optional(),
+    // ---- v2: pen physics (a-dude port, 0=off, 1=normal) ----
+    /** pressure breathing (0=fineliner constant, 1=full wave). */
+    press: z.number().min(0).max(2).optional(),
+    /** dry-blink rate (0=never, 1=house nib). */
+    dry: z.number().min(0).max(2).optional(),
+    /** corner pooling (0=none, 1=house). */
+    pool: z.number().min(0).max(2).optional(),
+    /** flank split threshold multiplier (0=no split). */
+    split: z.number().min(0).max(2).optional(),
+    /** paper bite-back (0=none, 1=house). */
+    bite: z.number().min(0).max(2).optional(),
+    /** use v2 fbm engine (default false = v1 sine compatible). */
+    fbm: z.boolean().optional(),
+    /** named pen preset (sets press/dry/pool/split/bite/fbm). */
+    pen: z.enum(["house", "fountain", "biro", "blackBiro", "fineliner", "brown", "greenBlack", "graphite"]).optional(),
   }).optional(),
 });
 export const DrawStrokeParams = DrawStrokeInput.transform((params) => ({
@@ -617,6 +632,19 @@ export const HandFillParams = z.object({
   seed: z.number().int().min(0).max(0xffff_ffff).optional(),
 });
 export type HandFillParams = z.infer<typeof HandFillParams>;
+
+/** portrait.draw — programmatic portrait casting (five-axis person → skull → quirk → features → ink). */
+export const PortraitDrawParams = z.object({
+  layerId: LayerId,
+  seed: z.number().int().min(0).max(0xffff_ffff),
+  x: z.number().min(0).max(8192),
+  y: z.number().min(0).max(8192),
+  /** head radius px */
+  size: z.number().min(10).max(2000),
+  ink: Color.optional(),
+  paper: Color.optional(),
+});
+export type PortraitDrawParams = z.infer<typeof PortraitDrawParams>;
 export type DrawStrokeParams = z.infer<typeof DrawStrokeParams>;
 
 export const DrawLineParams = z.object({
@@ -1217,6 +1245,7 @@ export const METHODS: Record<string, MethodDef> = {
   // draw.*
   "draw.stroke": { params: DrawStrokeParams, needsPrimary: true, emitsEvent: "stroke.committed" },
   "hand.fill": { params: HandFillParams, needsPrimary: true, emitsEvent: "stroke.committed" },
+  "portrait.draw": { params: PortraitDrawParams, needsPrimary: true, emitsEvent: "stroke.committed" },
   "draw.line": { params: DrawLineParams, needsPrimary: true, emitsEvent: "stroke.committed" },
   "draw.rect": { params: DrawRectParams, needsPrimary: true, emitsEvent: "stroke.committed" },
   "draw.circle": { params: DrawCircleParams, needsPrimary: true, emitsEvent: "stroke.committed" },

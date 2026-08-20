@@ -417,6 +417,7 @@ export function registerHandlers(deps: HandlerDeps): void {
     "draw.gradient",
     "draw.image",
     "hand.fill",
+    "portrait.draw",
   ];
   for (const m of drawMethods) {
     router.register(m, (params) => {
