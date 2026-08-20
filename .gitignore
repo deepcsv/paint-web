@@ -19,3 +19,4 @@ card_*.png
 brush_catalog*.png
 __pycache__/
 *.mjs
+data.broken*/

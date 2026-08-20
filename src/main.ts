@@ -568,6 +568,7 @@ internalHandlers.set("layer.flatten", (p) => {
 internalHandlers.set("layer.transform", (p) => controller.transformLayer(p as never));
 internalHandlers.set("draw.stroke", wrapHandler("draw.stroke", (p: never) => controller.stroke(p)));
 internalHandlers.set("hand.fill", wrapHandler("hand.fill", (p: never) => controller.handFill(p)));
+internalHandlers.set("portrait.draw", wrapHandler("portrait.draw", (p: never) => controller.portraitDraw(p)));
 internalHandlers.set("draw.line", wrapHandler("draw.line", (p: never) => controller.line(p)));
 internalHandlers.set("draw.rect", wrapHandler("draw.rect", (p: never) => controller.rect(p)));
 internalHandlers.set("draw.circle", wrapHandler("draw.circle", (p: never) => controller.circle(p)));

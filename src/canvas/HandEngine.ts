@@ -1,8 +1,7 @@
-// HandEngine — 手绘误差分层合成引擎（五层人手误差模型：摆动/压感/颗粒/起收笔/复笔）
-// 核心洞见: 手绘感 = 五种独立的"人手误差"叠加:
-//   1. 手臂摆动(三频正弦法向偏移)  2. 压力起伏(线宽独立正弦)
-//   3. 笔尖颗粒(石墨碎屑+纸色回咬) 4. 起收笔 overshoot+taper 包络
-//   5. 断笔 lift (笔偶尔离纸)
+// HandEngine — 手绘误差分层合成引擎
+// v1: 五层人手误差模型（摆动/压感/颗粒/起收笔/复笔）
+// v2 (a-dude 移植): fbm 值噪声场 · 笔物理(press/dry/pool/split/bite) · 拐角积墨
+//     · 连续场断墨 · 侧絮带 · 压力波长按笔画缩放 · 落笔收笔包络 · 局部纸咬
 // 全部确定性: 同 seed 同输出。
 
 export interface HandStrokeOptions {
@@ -27,7 +26,33 @@ export interface HandStrokeOptions {
   /** 纸色 [r,g,b] (回咬碎屑用) */
   paper?: [number, number, number];
   seed?: number;
+  // ---- v2: 笔物理 (0=关, 1=正常; 从 a-dude 干笔尖引擎移植) ----
+  /** 压力呼吸量 (0=恒宽 fineliner, 1=全波) */
+  press?: number;
+  /** 断墨率 (0=不断, 1=正常干尖) */
+  dry?: number;
+  /** 拐角积墨 (0=不积, 1=正常) */
+  pool?: number;
+  /** 侧絮分裂阈值倍率 (0=不裂) */
+  split?: number;
+  /** 纸咬量 (0=纸不咬, 1=正常) */
+  bite?: number;
+  /** 启用 v2 fbm 引擎 (default false = 保持 v1 正弦兼容) */
+  fbm?: boolean;
 }
+
+// v2: 8 支笔的物理预设 (从 a-dude PENS 表移植)
+export const PEN_PRESETS: Record<string, Required<Pick<HandStrokeOptions,
+  "press" | "dry" | "pool" | "split" | "bite">>> = {
+  house:      { press: 1.0, dry: 1.0, pool: 1.0, split: 1.0, bite: 1.0 },
+  fountain:   { press: 1.3, dry: 0.3, pool: 1.6, split: 0.5, bite: 0.2 },
+  biro:       { press: 0.3, dry: 1.5, pool: 0.0, split: 0.0, bite: 0.6 },
+  blackBiro:  { press: 0.3, dry: 1.5, pool: 0.0, split: 0.0, bite: 0.6 },
+  fineliner:  { press: 0.0, dry: 0.2, pool: 0.0, split: 0.0, bite: 0.1 },
+  brown:      { press: 0.8, dry: 1.2, pool: 0.7, split: 0.8, bite: 0.9 },
+  greenBlack: { press: 0.9, dry: 1.1, pool: 0.8, split: 0.9, bite: 0.8 },
+  graphite:   { press: 1.1, dry: 0.5, pool: 0.1, split: 1.6, bite: 1.8 },
+};
 
 // ---------- 确定性 rng (mulberry32) ----------
 function rng(seed: number) {
@@ -44,6 +69,27 @@ const rr = (R: R, a: number, b: number) => a + R() * (b - a);
 const ri = (R: R, a: number, b: number) => Math.floor(rr(R, a, b + 1));
 const chance = (R: R, p: number) => R() < p;
 const smooth = (v: number) => (v <= 0 ? 0 : v >= 1 ? 1 : v * v * (3 - 2 * v));
+
+// ---------- v2: fbm 值噪声场 (a-dude 移植) ----------
+function hash2(ix: number, iy: number, seed: number): number {
+  let n = Math.imul(ix, 374761393) + Math.imul(iy, 668265263) + Math.imul(seed, 1274126177);
+  n = Math.imul(n ^ (n >>> 13), 1274126177);
+  return ((n ^ (n >>> 16)) >>> 0) / 4294967296;
+}
+function valueNoise(x: number, y: number, seed: number): number {
+  const x0 = Math.floor(x), y0 = Math.floor(y);
+  const fx = x - x0, fy = y - y0;
+  const sx = fx * fx * (3 - 2 * fx);
+  const sy = fy * fy * (3 - 2 * fy);
+  const a = hash2(x0, y0, seed);
+  const b = hash2(x0 + 1, y0, seed);
+  const c = hash2(x0, y0 + 1, seed);
+  const d = hash2(x0 + 1, y0 + 1, seed);
+  return a + (b - a) * sx + (c - a) * sy + (a - b - c + d) * sx * sy;
+}
+function fbm2(x: number, y: number, seed: number): number {
+  return valueNoise(x, y, seed) * 0.66 + valueNoise(x * 2.13, y * 2.13, seed + 17) * 0.34;
+}
 
 // ---------- 几何 ----------
 type Pt = [number, number];
@@ -155,36 +201,177 @@ export function handStroke(ctx: Ctx2D, ptsIn: Pt[], w: number, opts: HandStrokeO
   // 层1: 三频摆动相位 | 层2: 压力独立相位
   const p1 = rr(R, 0, 7), p2 = rr(R, 0, 7), p3 = rr(R, 0, 7), p4 = rr(R, 0, 7);
   const f1 = rr(R, 1.5, 3.5), f2 = rr(R, 5, 9), f3 = rr(R, 11, 17);
+  // v2: 笔物理缺省 (0=v1 兼容, 1=正常干尖)
+  const press = opts.press ?? 0;
+  const dryK = opts.dry ?? 0;
+  const pool = opts.pool ?? 0;
+  const split = opts.split ?? 0;
+  const bite = opts.bite ?? 0;
+  const useFbm = opts.fbm ?? false;
+  // v2: 笔画弧长 (压力波长按此缩放——"比线还长的噪声给恒定宽")
+  let arcL = 0;
+  for (let i = 1; i < n; i++) arcL += Math.hypot(rs[i][0] - rs[i - 1][0], rs[i][1] - rs[i - 1][1]);
+  const sd = (seed * 7919) >>> 0;
+
   const L: Pt[] = [], Rt: Pt[] = [], C: Array<[number, number, number, number, number]> = [];
+  const W: number[] = [];
+  const live: boolean[] = [];
+  const P: Pt[] = [];
   for (let i = 0; i < n; i++) {
     const t = i / (n - 1);
     const a = rs[Math.max(0, i - 1)], b = rs[Math.min(n - 1, i + 1)];
     let nx = -(b[1] - a[1]), ny = b[0] - a[0];
     const d = Math.hypot(nx, ny) || 1;
     nx /= d; ny /= d;
-    // 层1: 手臂摆动 — 三频正弦法向偏移 (臂 .55 / 腕 .3 / 指 .15)
-    const off = amp * (0.55 * Math.sin(t * f1 * 2 + p1) + 0.3 * Math.sin(t * f2 + p2) + 0.15 * Math.sin(t * f3 + p3));
+    // 层1: 手臂摆动 — v2 fbm 或 v1 三频正弦
+    let off: number;
+    if (useFbm) {
+      const u = t * arcL;
+      off = (fbm2(u * 0.019, sd * 0.013, sd) - 0.5) * 2 * amp
+          + (fbm2(u * 0.105, sd * 0.007, sd + 31) - 0.5) * 2 * amp * 0.3;
+    } else {
+      off = amp * (0.55 * Math.sin(t * f1 * 2 + p1) + 0.3 * Math.sin(t * f2 + p2) + 0.15 * Math.sin(t * f3 + p3));
+    }
     const px = rs[i][0] + nx * off + rr(R, -0.35, 0.35);
     const py = rs[i][1] + ny * off + rr(R, -0.35, 0.35);
+    P.push([px, py]);
+
     // 层2: 压力起伏 + 层4b: 端部 taper 包络
     let half = (w / 2)
       * (opts.wedge ? (0.25 + 0.95 * t) : (0.3 + 0.7 * smooth(Math.min(t, 1 - t) / taper)))
       * (1 + 0.38 * Math.sin(t * 7.3 + p4) + 0.14 * Math.sin(t * 19 + p2))
       * rr(R, 0.88, 1.14);
+
+    // v2: 压力波长按笔画缩放 (a-dude: 恒宽是 plotted 的第一破绽)
+    if (press > 0) {
+      const u = t * arcL;
+      const cyc = 1.3 + ((sd >>> 3) % 9) * 0.42;
+      const slow = (fbm2(t * cyc * 2 + 7, sd * 0.011, sd + 5) - 0.5);
+      const slow2 = (fbm2(t * cyc * 5.5 + 3, sd * 0.017, sd + 211) - 0.5);
+      const fast = (fbm2(u * 0.185, sd * 0.005, sd + 61) - 0.5);
+      let pr = 1 + (slow * 1.7 + slow2 * 0.62 + fast * 0.26) * press;
+      // 落笔包络: 前 3 点 press × (1 + (0.3 - i*0.09)*press)
+      if (i < 3) pr *= 1 + (0.3 - i * 0.09) * press;
+      // 收笔包络: 末 6 点递减
+      const tail = n - 1 - i;
+      if (tail < 6) pr *= 1 - (0.48 - (tail / 6) * 0.48) * press;
+
+      // v2: 拐角积墨 — 5 点跨度测转角, 真弯才积 (0.35-1.25 rad)
+      const span = 5;
+      const ca = P[Math.max(0, i - span)];
+      const cb = P[Math.min(P.length - 1, i + span)];
+      let ang = Math.atan2(cb[1] - py, cb[0] - px) - Math.atan2(py - ca[1], px - ca[0]);
+      while (ang > Math.PI) ang -= Math.PI * 2;
+      while (ang < -Math.PI) ang += Math.PI * 2;
+      const turn = Math.abs(ang);
+      if (pool > 0 && turn > 0.35 && turn < 1.25) pr *= 1 + Math.min(0.55, (turn - 0.35) * 0.95) * pool;
+
+      half *= Math.min(2.6, Math.max(0.08, pr));
+    }
+
     half = Math.max(half, 0.28);
+    W.push(half * 2);
     L.push([px + nx * half, py + ny * half]);
     Rt.push([px - nx * half, py - ny * half]);
     C.push([px, py, nx, ny, half]);
+
+    // v2: 连续场断墨 (a-dude: fbm 阈值, 细线更易断)
+    if (dryK > 0) {
+      const u = t * arcL;
+      const dry = fbm2(u * 0.19 + 11, sd * 0.02, sd + 137);
+      const thr = 0.125 * dryK * (w < 1.3 ? 1.4 : w > 2.6 ? 0.5 : 1);
+      live[i] = !(dry < thr && i > 1 && i < n - 2);
+    } else {
+      live[i] = true;
+    }
   }
 
-  // 石墨芯
-  ctx.beginPath();
-  ctx.moveTo(L[0][0], L[0][1]);
-  for (let i = 1; i < n; i++) ctx.lineTo(L[i][0], L[i][1]);
-  for (let i = n - 1; i >= 0; i--) ctx.lineTo(Rt[i][0], Rt[i][1]);
-  ctx.closePath();
-  ctx.fillStyle = inkA(alpha * 0.62);
-  ctx.fill();
+  // v2: live 段绘制 (断墨时只画活段, 跳过死段)
+  const drawLiveSegment = (i0: number, i1: number) => {
+    ctx.beginPath();
+    ctx.moveTo(L[i0][0], L[i0][1]);
+    for (let i = i0 + 1; i <= i1; i++) ctx.lineTo(L[i][0], L[i][1]);
+    for (let i = i1; i >= i0; i--) ctx.lineTo(Rt[i][0], Rt[i][1]);
+    ctx.closePath();
+    ctx.fillStyle = inkA(alpha * 0.62);
+    ctx.fill();
+  };
+
+  if (dryK > 0) {
+    let i = 0;
+    while (i < n) {
+      if (!live[i]) { i++; continue; }
+      let j = i;
+      while (j + 1 < n && live[j + 1]) j++;
+      if (j > i) drawLiveSegment(i, j);
+      else if (i > 0 && i < n - 1) {
+        // 单活点: 画小圆
+        ctx.beginPath();
+        ctx.arc(P[i][0], P[i][1], W[i] * 0.4, 0, Math.PI * 2);
+        ctx.fillStyle = inkA(alpha * 0.62);
+        ctx.fill();
+      }
+      i = j + 1;
+    }
+  } else {
+    // v1: 整段
+    drawLiveSegment(0, n - 1);
+  }
+
+  // v2: 侧絮带 (a-dude: 中带湿+两侧毛边, 圆珠笔不裂软笔全裂)
+  if (split > 0 && w * split > 1.7) {
+    const bands: Array<[number, number, number, number]> = [
+      [-0.32, 0.3 * split, sd + 401, 0.45],
+      [0.32, 0.3 * split, sd + 733, 0.47],
+    ];
+    for (const [off2, wk, dseed, dthr] of bands) {
+      let i = 0;
+      while (i < n) {
+        const okAt = (k: number) =>
+          live[k] && fbm2(k * 2.2 * 0.26 + 3, dseed * 0.02, dseed) > dthr;
+        if (!okAt(i)) { i++; continue; }
+        let j = i;
+        while (j + 1 < n && okAt(j + 1)) j++;
+        if (j > i) {
+          ctx.beginPath();
+          for (let k = i; k <= j; k++) {
+            const o = off2 * W[k] * 0.5;
+            const hw = Math.max(0.16, wk * W[k]) * 0.5;
+            const [px, py, , , ] = C[k];
+            const nx2 = k > 0 ? -(P[Math.min(n - 1, k + 1)][1] - P[Math.max(0, k - 1)][1]) : 0;
+            const ny2 = k > 0 ? P[Math.min(n - 1, k + 1)][0] - P[Math.max(0, k - 1)][0] : 1;
+            const dn = Math.hypot(nx2, ny2) || 1;
+            ctx.lineTo(px + (nx2 / dn) * (o + hw), py + (ny2 / dn) * (o + hw));
+          }
+          for (let k = j; k >= i; k--) {
+            const o = off2 * W[k] * 0.5;
+            const hw = Math.max(0.16, wk * W[k]) * 0.5;
+            const [px, py, , , ] = C[k];
+            const nx2 = k > 0 ? -(P[Math.min(n - 1, k + 1)][1] - P[Math.max(0, k - 1)][1]) : 0;
+            const ny2 = k > 0 ? P[Math.min(n - 1, k + 1)][0] - P[Math.max(0, k - 1)][0] : 1;
+            const dn = Math.hypot(nx2, ny2) || 1;
+            ctx.lineTo(px + (nx2 / dn) * (o - hw), py + (ny2 / dn) * (o - hw));
+          }
+          ctx.closePath();
+          ctx.fillStyle = inkA(alpha * 0.5);
+          ctx.fill();
+        }
+        i = j + 1;
+      }
+    }
+  }
+
+  // v2: 拐角积墨点 (pool 高时在真弯处点椭圆)
+  if (pool > 0.5) {
+    for (let k = 3; k < n - 3; k += 2) {
+      if (!live[k] || W[k] < w * 0.65) continue;
+      if (!chance(R, 0.14 * pool)) continue;
+      ctx.beginPath();
+      ctx.ellipse(P[k][0], P[k][1], W[k] * 0.58, W[k] * 0.46, k * 0.3, 0, Math.PI * 2);
+      ctx.fillStyle = inkA(alpha * 0.62);
+      ctx.fill();
+    }
+  }
 
   // 层3: 干颗粒 — 石墨碎屑 + 纸色回咬 (纸咬回来)
   if (opts.crumbs !== false && w >= 1.2) {
@@ -197,9 +384,11 @@ export function handStroke(ctx: Ctx2D, ptsIn: Pt[], w: number, opts: HandStrokeO
         ctx.fillStyle = inkA(alpha * rr(R, 0.2, 0.55));
         ctx.fillRect(px + nx * half * u + rr(R, -0.7, 0.7) - sz / 2, py + ny * half * u + rr(R, -0.7, 0.7) - sz / 2, sz, sz);
       }
-      if (chance(R, 0.45)) {
+      // v2: 局部纸咬 (bite > 0 时, 按笔物理提高纸色回咬密度)
+      const paperChance = 0.45 + (bite > 0 ? bite * 0.3 : 0);
+      if (chance(R, paperChance)) {
         const u = (chance(R, 0.5) ? 1 : -1) * rr(R, 0.8, 1.15);
-        const sz = rr(R, 0.9, 2);
+        const sz = rr(R, 0.9, 2) * (bite > 0 ? 1 + bite * 0.3 : 1);
         ctx.fillStyle = paperA(rr(R, 0.4, 0.8));
         ctx.fillRect(px + nx * half * u - sz / 2, py + ny * half * u - sz / 2, sz, sz);
       }

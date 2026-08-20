@@ -2,7 +2,7 @@ import { METHODS, type TransactionOperation } from "../shared/protocol.js";
 import type { z } from "zod";
 import { RpcError } from "./rpc/errors.js";
 
-const DOCUMENT_MUTATION_PREFIXES = ["draw.", "hand.", "filter.", "layer."];
+const DOCUMENT_MUTATION_PREFIXES = ["draw.", "hand.", "portrait.", "filter.", "layer."];
 const DOCUMENT_MUTATION_METHODS = new Set([
   "canvas.resize",
   "canvas.clear",
@@ -66,7 +66,7 @@ export function validateDrawBatchOperations(
   return operations.map((operation, index) => {
     if (
       operation.method === "draw.batch" ||
-      (!operation.method.startsWith("draw.") && !operation.method.startsWith("filter.") && !operation.method.startsWith("hand."))
+      (!operation.method.startsWith("draw.") && !operation.method.startsWith("filter.") && !operation.method.startsWith("hand.") && !operation.method.startsWith("portrait."))
     ) {
       throw RpcError.invalidParams({
         index,
